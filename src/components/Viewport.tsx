@@ -47,6 +47,8 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const cineIntervalRef = useRef<number | null>(null);
     const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | null }>({ startX: 0, startY: 0, mode: null });
     const wheelAccumulator = useRef(0);
+    const activeRequestId = useRef(0);
+
 
 
     const instances = series.instances;
@@ -138,12 +140,18 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             return;
         }
 
+        // Increment ID for this new frame load attempt - Latest Wins
+        const requestId = ++activeRequestId.current;
+
         setLoading(true);
         setError(null);
         setIsUnsupported(false);
 
         decodeFrame(currentInstance, 0)
             .then(frame => {
+                // Ignore if stale
+                if (requestId !== activeRequestId.current) return;
+
                 setCurrentFrame(frame);
                 // Set initial window from frame defaults
                 if (viewState.frameIndex === 0 || !currentFrame) {
@@ -156,6 +164,9 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 setLoading(false);
             })
             .catch(err => {
+                // Ignore if stale
+                if (requestId !== activeRequestId.current) return;
+
                 if (err instanceof DecodeError) {
                     setError(err.message);
                     setIsUnsupported(err.isUnsupported);
@@ -532,7 +543,11 @@ export function Viewport() {
 
     return (
         <main className="viewport">
-            <DicomViewer series={selectedSeries} fileRegistry={fileRegistry} />
+            <DicomViewer
+                key={selectedSeries.seriesInstanceUid}
+                series={selectedSeries}
+                fileRegistry={fileRegistry}
+            />
         </main>
     );
 }
