@@ -370,7 +370,45 @@ function sortStudyContents(study: Study) {
 
                     return distA - distB;
                 });
-                series.geometryTrust = 'trusted';
+
+                // Verify slice spacing consistency
+                let isRegular = true;
+                if (series.instances.length > 1) {
+                    // Recalculate distances to check intervals
+                    const dists = series.instances.map(i => {
+                        const pos = parseDS(i.imagePositionPatient!)!;
+                        return pos[0] * nx + pos[1] * ny + pos[2] * nz;
+                    });
+
+                    const intervals = [];
+                    for (let i = 1; i < dists.length; i++) {
+                        intervals.push(Math.abs(dists[i] - dists[i - 1]));
+                    }
+
+                    // Calculate average spacing
+                    const total = intervals.reduce((sum, val) => sum + val, 0);
+                    const avg = total / intervals.length;
+
+                    // Check for deviations > 0.1mm (allowing for some floating point slush)
+                    // CT/MR are usually precise, but 0.1mm is safe threshold for "Irregular"
+                    const tolerance = 0.1;
+
+                    for (const interval of intervals) {
+                        if (Math.abs(interval - avg) > tolerance) {
+                            isRegular = false;
+                            break;
+                        }
+                    }
+                }
+
+                series.geometryTrust = isRegular ? 'verified' : 'trusted';
+                series.geometryTrustInfo = {
+                    level: series.geometryTrust,
+                    reasons: isRegular
+                        ? ['Regular slice spacing verified', 'Sorted by spatial position']
+                        : ['Sorted by spatial position', 'Irregular slice spacing detected']
+                };
+
                 continue; // Done with this series
             }
         }

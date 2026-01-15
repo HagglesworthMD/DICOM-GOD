@@ -339,8 +339,10 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         };
 
         container.addEventListener('wheel', onWheel, { passive: false });
+        // Reset accumulator when series changes to prevent jump
+        wheelAccumulator.current = 0;
         return () => container.removeEventListener('wheel', onWheel);
-    }, [instances.length]);
+    }, [series.seriesInstanceUid, instances.length]);
 
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
         if (e.button === 0 && (e.altKey || e.ctrlKey)) {
@@ -399,9 +401,12 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                     <span
                         className="dicom-viewer__trust"
                         style={{ opacity: 0.8, fontSize: '0.85em', cursor: 'help' }}
-                        title={series.geometryTrust === 'trusted' ? 'Sorted by IPP (Spatial)' : 'Sorted by Instance Number (Fallback)'}
+                        title={series.geometryTrustInfo?.reasons.join('\n') || (series.geometryTrust === 'untrusted' ? 'Sorted by Instance Number (Fallback)' : 'Sorted by IPP')}
                     >
-                        {series.geometryTrust === 'trusted' ? '📐 IPP Order' : '🔢 Instance Order'}
+                        {series.geometryTrust === 'verified' && '🟢 Spatial Verified'}
+                        {series.geometryTrust === 'trusted' && '⚠️ Spatial (Irregular)'}
+                        {series.geometryTrust === 'untrusted' && '🔢 Instance Order'}
+                        {(series.geometryTrust === 'unknown' || !series.geometryTrust) && '❓ Unknown Order'}
                     </span>
                 </div>
                 <div className="dicom-viewer__controls">
