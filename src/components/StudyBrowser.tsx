@@ -67,7 +67,34 @@ interface SeriesItemProps {
     onSelect: () => void;
 }
 
+/** Get badge emoji for trust level */
+function getTrustBadge(level: Series['geometryTrust']): string {
+    switch (level) {
+        case 'verified': return '🟢';
+        case 'trusted': return '🟡';
+        case 'untrusted': return '🔴';
+        default: return '⚪';
+    }
+}
+
+/** Build tooltip text from trust info */
+function getTrustTooltip(series: Series): string {
+    const info = series.geometryTrustInfo;
+    if (!info) return `Geometry: ${series.geometryTrust}`;
+
+    const lines = [
+        `Geometry: ${info.level}`,
+        `Spacing: ${info.spacingSource}`,
+        '',
+        ...info.reasons
+    ];
+    return lines.join('\n');
+}
+
 function SeriesItem({ series, isSelected, onSelect }: SeriesItemProps) {
+    const badge = getTrustBadge(series.geometryTrust);
+    const tooltip = getTrustTooltip(series);
+
     return (
         <li className="series-item">
             <button
@@ -84,6 +111,13 @@ function SeriesItem({ series, isSelected, onSelect }: SeriesItemProps) {
                         {series.instances.length} {series.instances.length === 1 ? 'image' : 'images'}
                     </span>
                 </div>
+                <span
+                    className="series-item__trust"
+                    title={tooltip}
+                    style={{ fontSize: '0.9em', cursor: 'help', marginLeft: 'auto', paddingLeft: '8px' }}
+                >
+                    {badge}
+                </span>
             </button>
         </li>
     );
