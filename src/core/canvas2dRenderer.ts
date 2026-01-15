@@ -171,6 +171,11 @@ export function drawOverlay(
             offsetX: number;
             offsetY: number;
         };
+        cineInfo?: {
+            isPlaying: boolean;
+            fps: number;
+            canCine: boolean;
+        };
     }
 ): void {
     const ctx = canvas.getContext('2d');
@@ -184,11 +189,23 @@ export function drawOverlay(
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
     ctx.font = '12px monospace';
 
-    // Top-left: Frame info
-    const frameText = `${info.frameIndex + 1} / ${info.totalFrames}`;
+    // Top-left: Frame info + Cine status
+    let frameText = `${info.frameIndex + 1} / ${info.totalFrames}`;
+    let cineColor = '#fff';
+
+    if (info.cineInfo) {
+        if (info.cineInfo.isPlaying) {
+            frameText += ` ▶ CINE ${info.cineInfo.fps}fps`;
+            cineColor = '#4f4'; // Green when playing
+        } else if (!info.cineInfo.canCine) {
+            frameText += ` ⊘ CINE disabled`;
+            cineColor = '#888'; // Gray when disabled
+        }
+    }
+
     const frameWidth = ctx.measureText(frameText).width + padding * 2;
     ctx.fillRect(padding, padding, frameWidth, 20);
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = cineColor;
     ctx.fillText(frameText, padding * 2, padding + 14);
 
     // Top-right: Window info

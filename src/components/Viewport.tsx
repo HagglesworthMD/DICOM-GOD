@@ -37,11 +37,13 @@ const DEFAULT_STATE: ViewportState = {
 // LRU Frame Cache
 // ============================================================================
 const CACHE_MAX_SIZE = 32;
-const PREFETCH_AHEAD = 6;    // Frames to prefetch in nav direction
-const PREFETCH_BEHIND = 2;   // Frames to prefetch behind (for backscroll)
+const PREFETCH_CINE_AHEAD = 8;    // Frames to prefetch ahead during cine
+const PREFETCH_CINE_BEHIND = 2;   // Frames to prefetch behind during cine
+const PREFETCH_MANUAL_AHEAD = 4;  // Frames to prefetch ahead during manual nav
+const PREFETCH_MANUAL_BEHIND = 2; // Frames to prefetch behind during manual nav
 const PREFETCH_MAX_INFLIGHT = 1;
 const DEBUG_PREFETCH = false;
-const MIN_CINE_FRAMES = 6;   // Minimum frames required for cine playback
+const MIN_CINE_FRAMES = 6;        // Minimum frames required for cine playback
 
 /** Simple LRU cache for decoded frames */
 class FrameLRUCache {
@@ -341,8 +343,12 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         const queuedSet = prefetchQueuedSetRef.current;
         queuedSet.clear();
 
+        // Use larger prefetch window during cine playback
+        const prefetchAhead = viewState.isPlaying ? PREFETCH_CINE_AHEAD : PREFETCH_MANUAL_AHEAD;
+        const prefetchBehind = viewState.isPlaying ? PREFETCH_CINE_BEHIND : PREFETCH_MANUAL_BEHIND;
+
         // Prefetch ahead in navigation direction
-        for (let i = 1; i <= PREFETCH_AHEAD; i++) {
+        for (let i = 1; i <= prefetchAhead; i++) {
             let idx: number;
             if (dir > 0) {
                 idx = (startIdx + i) % instances.length;
@@ -357,7 +363,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         }
 
         // Prefetch behind (opposite direction) for back-scroll resilience
-        for (let i = 1; i <= PREFETCH_BEHIND; i++) {
+        for (let i = 1; i <= prefetchBehind; i++) {
             let idx: number;
             if (dir > 0) {
                 idx = (startIdx - i + instances.length) % instances.length;
@@ -373,7 +379,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
         prefetchQueueRef.current = queue;
         runPrefetchPump();
-    }, [viewState.frameIndex, instances, runPrefetchPump]);
+    }, [viewState.frameIndex, viewState.isPlaying, instances, runPrefetchPump]);
 
     // Render to canvas
     useEffect(() => {
@@ -451,10 +457,15 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 geometryTrust: series.geometryTrustInfo,
                 measurements: viewState.measurements,
                 inProgressMeasurement: measureRef.current,
-                imageToCanvasTransform: { scale, offsetX, offsetY }
+                imageToCanvasTransform: { scale, offsetX, offsetY },
+                cineInfo: {
+                    isPlaying: viewState.isPlaying,
+                    fps: viewState.cineFrameRate,
+                    canCine
+                }
             });
         }
-    }, [currentFrame, viewState, loading, error, isUnsupported, instances.length, currentInstance, series.geometryTrustInfo]);
+    }, [currentFrame, viewState, loading, error, isUnsupported, instances.length, currentInstance, series.geometryTrustInfo, canCine]);
 
     // Resize handler
     useEffect(() => {
@@ -577,7 +588,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         const queue: Instance[] = [];
         const queuedSet = prefetchQueuedSetRef.current;
         queuedSet.clear();
-        for (let i = 1; i <= PREFETCH_AHEAD; i++) {
+        for (let i = 1; i <= PREFETCH_CINE_AHEAD; i++) {
             const idx = (viewState.frameIndex + i) % totalFrames;
             const inst = instances[idx];
             if (inst && !queuedSet.has(inst.fileKey)) {
@@ -630,15 +641,22 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                     zoom: Math.max(0.1, Math.min(10, prev.zoom * delta)),
                 }));
             } else {
-                // Stack scroll
+                // Stack scroll with modifier support
+                // Shift = fast (5 frames), Alt = fine (1 frame with lower threshold)
+                const fastMode = e.shiftKey;
+                const fineMode = e.altKey;
+
+                const threshold = fineMode ? 20 : 40; // Lower threshold for fine mode
+                const multiplier = fastMode ? 5 : 1;
+
                 wheelAccumulator.current += e.deltaY;
-                const threshold = 40; // Pixels per step
 
                 if (Math.abs(wheelAccumulator.current) >= threshold) {
-                    const steps = Math.trunc(wheelAccumulator.current / threshold);
+                    const rawSteps = Math.trunc(wheelAccumulator.current / threshold);
                     wheelAccumulator.current %= threshold;
 
-                    if (steps !== 0) {
+                    if (rawSteps !== 0) {
+                        const steps = rawSteps * multiplier;
                         // Track navigation direction
                         lastNavDirRef.current = steps > 0 ? 1 : -1;
 
