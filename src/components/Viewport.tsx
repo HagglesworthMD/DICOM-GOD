@@ -46,6 +46,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const [waitingForFiles, setWaitingForFiles] = useState(false);
     const cineIntervalRef = useRef<number | null>(null);
     const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | null }>({ startX: 0, startY: 0, mode: null });
+    const wheelAccumulator = useRef(0);
 
 
     const instances = series.instances;
@@ -303,25 +304,43 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     }, []);
 
     // Mouse handlers
-    const handleWheel = useCallback((e: React.WheelEvent) => {
-        e.preventDefault();
+    // Native wheel handler for non-passive prevention (stack scroll)
+    useEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
 
-        if (e.ctrlKey) {
-            // Zoom
-            const delta = e.deltaY > 0 ? 0.9 : 1.1;
-            setViewState(prev => ({
-                ...prev,
-                zoom: Math.max(0.1, Math.min(10, prev.zoom * delta)),
-            }));
-        } else {
-            // Stack scroll
-            if (e.deltaY > 0) {
-                nextFrame();
+        const onWheel = (e: WheelEvent) => {
+            e.preventDefault();
+
+            if (e.ctrlKey || e.metaKey) {
+                // Zoom
+                const delta = e.deltaY > 0 ? 0.9 : 1.1;
+                setViewState(prev => ({
+                    ...prev,
+                    zoom: Math.max(0.1, Math.min(10, prev.zoom * delta)),
+                }));
             } else {
-                prevFrame();
+                // Stack scroll
+                wheelAccumulator.current += e.deltaY;
+                const threshold = 40; // Pixels per step
+
+                if (Math.abs(wheelAccumulator.current) >= threshold) {
+                    const steps = Math.trunc(wheelAccumulator.current / threshold);
+                    wheelAccumulator.current %= threshold;
+
+                    if (steps !== 0) {
+                        setViewState(prev => ({
+                            ...prev,
+                            frameIndex: Math.max(0, Math.min(instances.length - 1, prev.frameIndex + steps))
+                        }));
+                    }
+                }
             }
-        }
-    }, [nextFrame, prevFrame]);
+        };
+
+        container.addEventListener('wheel', onWheel, { passive: false });
+        return () => container.removeEventListener('wheel', onWheel);
+    }, [instances.length]);
 
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
         if (e.button === 0 && (e.altKey || e.ctrlKey)) {
@@ -379,9 +398,10 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                     <span className="dicom-viewer__description">{series.description}</span>
                     <span
                         className="dicom-viewer__trust"
-                        title={trustInfo.reasons.join('\n')}
+                        style={{ opacity: 0.8, fontSize: '0.85em', cursor: 'help' }}
+                        title={series.geometryTrust === 'trusted' ? 'Sorted by IPP (Spatial)' : 'Sorted by Instance Number (Fallback)'}
                     >
-                        {getTrustBadge(trustInfo.level)} {getTrustDescription(trustInfo.level)}
+                        {series.geometryTrust === 'trusted' ? '📐 IPP Order' : '🔢 Instance Order'}
                     </span>
                 </div>
                 <div className="dicom-viewer__controls">
@@ -400,7 +420,6 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             <div
                 ref={containerRef}
                 className="dicom-viewer__canvas-container"
-                onWheel={handleWheel}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}

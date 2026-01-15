@@ -298,6 +298,18 @@ function addInstance(series: Series, parsed: ParsedDicom, file: FileEntry) {
  * Sort series by SeriesNumber then description
  * Sort instances by InstanceNumber then SOPInstanceUID
  */
+/**
+ * Parse DICOM DS string (1.2\3.4) to number array
+ */
+function parseDS(val?: string): number[] | null {
+    if (!val) return null;
+    return val.split('\\').map(parseFloat);
+}
+
+/**
+ * Sort series by SeriesNumber then description
+ * Sort instances by IOP/IPP (Geometry), then InstanceNumber, then FileKey
+ */
 function sortStudyContents(study: Study) {
     // Sort series
     study.series.sort((a, b) => {
@@ -312,7 +324,7 @@ function sortStudyContents(study: Study) {
         }
 
         // Description as tiebreaker
-        const descCmp = a.description.localeCompare(b.description);
+        const descCmp = (a.description || '').localeCompare(b.description || '');
         if (descCmp !== 0) return descCmp;
 
         // UID as final tiebreaker
@@ -321,6 +333,50 @@ function sortStudyContents(study: Study) {
 
     // Sort instances in each series
     for (const series of study.series) {
+        // Determine sorting method
+        let useGeometry = false;
+
+        // Check if we have enough geometry info for all instances
+        const validGeometryCount = series.instances.filter(i =>
+            i.imagePositionPatient && i.imageOrientationPatient
+        ).length;
+
+        // If >90% have geometry, uses it (allows for some missing headers in weird cases, 
+        // but strict stack usually requires all. Let's require majority)
+        if (validGeometryCount === series.instances.length && series.instances.length > 1) {
+            useGeometry = true;
+        }
+
+        if (useGeometry) {
+            // Check consistency of orientation
+            const firstIOP = parseDS(series.instances[0].imageOrientationPatient!);
+            if (firstIOP && firstIOP.length === 6) {
+                const rx = firstIOP[0], ry = firstIOP[1], rz = firstIOP[2];
+                const cx = firstIOP[3], cy = firstIOP[4], cz = firstIOP[5];
+
+                // Normal vector = row x col
+                const nx = ry * cz - rz * cy;
+                const ny = rz * cx - rx * cz;
+                const nz = rx * cy - ry * cx;
+
+                // Sort by distance along normal (dot product of IPP * Normal)
+                series.instances.sort((a, b) => {
+                    const posA = parseDS(a.imagePositionPatient!)!;
+                    const posB = parseDS(b.imagePositionPatient!)!;
+
+                    // Dist = P dot N
+                    const distA = posA[0] * nx + posA[1] * ny + posA[2] * nz;
+                    const distB = posB[0] * nx + posB[1] * ny + posB[2] * nz;
+
+                    return distA - distB;
+                });
+                series.geometryTrust = 'trusted';
+                continue; // Done with this series
+            }
+        }
+
+        // Fallback: Instance Number
+        series.geometryTrust = 'untrusted';
         series.instances.sort((a, b) => {
             // InstanceNumber comparison (null sorts last)
             if (a.instanceNumber !== null && b.instanceNumber !== null) {
@@ -332,7 +388,12 @@ function sortStudyContents(study: Study) {
                 return 1;
             }
 
-            // SOPInstanceUID as tiebreaker
+            // SOPInstanceUID as tiebreaker NO, FileKey is better for consistent order if UIDs generic
+            if (a.fileKey && b.fileKey) {
+                return a.fileKey.localeCompare(b.fileKey);
+            }
+
+            // SOPInstanceUID as final
             return a.sopInstanceUid.localeCompare(b.sopInstanceUid);
         });
     }
