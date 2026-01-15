@@ -42,8 +42,11 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [isUnsupported, setIsUnsupported] = useState(false);
+    const [missingPermission, setMissingPermission] = useState(false);
+    const [waitingForFiles, setWaitingForFiles] = useState(false);
     const cineIntervalRef = useRef<number | null>(null);
     const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | null }>({ startX: 0, startY: 0, mode: null });
+
 
     const instances = series.instances;
     const currentInstance = instances[viewState.frameIndex];
@@ -55,31 +58,54 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         let mounted = true;
 
         const resolveFiles = async () => {
+            setMissingPermission(false);
+            setWaitingForFiles(false);
+
             const fileEntries: { instance: Instance; file: File }[] = [];
+            let permissionErrorFound = false;
 
             for (const instance of instances) {
                 const entry = fileRegistry.get(instance.fileKey);
 
-                if (!entry) {
-                    // console.warn(`[DEBUG] No registry entry for key: ${instance.fileKey}`);
-                    continue;
-                }
+                if (!entry) continue;
 
                 try {
                     let file: File;
                     if (entry.kind === 'file') {
                         file = entry.file;
                     } else {
-                        file = await entry.handle.getFile();
+                        // Prefer cached file if available (from scan)
+                        if (entry.file) {
+                            file = entry.file;
+                        } else {
+                            // Fallback to getting file from handle
+                            file = await entry.handle.getFile();
+                        }
                     }
                     fileEntries.push({ instance, file });
                 } catch (err) {
+                    // Check for permission errors
+                    if (err instanceof Error && (err.name === 'NotAllowedError' || err.name === 'NotFoundError')) {
+                        permissionErrorFound = true;
+                    }
                     console.error('Failed to resolve file for instance', instance.sopInstanceUid, err);
                 }
             }
 
             if (mounted) {
-                registerInstanceFiles(fileEntries);
+                if (permissionErrorFound) {
+                    setMissingPermission(true);
+                } else if (fileEntries.length < instances.length) {
+                    // If we have some files but not all, we might be scanning or restricted
+                    setWaitingForFiles(true);
+
+                    // Register what we have anyway
+                    if (fileEntries.length > 0) {
+                        registerInstanceFiles(fileEntries);
+                    }
+                } else {
+                    registerInstanceFiles(fileEntries);
+                }
             }
         };
 
@@ -382,6 +408,30 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 onContextMenu={handleContextMenu}
             >
                 <canvas ref={canvasRef} className="dicom-viewer__canvas" />
+
+                {(missingPermission || waitingForFiles) && (
+                    <div style={{
+                        position: 'absolute',
+                        top: 0, left: 0, right: 0, bottom: 0,
+                        display: 'flex', flexDirection: 'column',
+                        alignItems: 'center', justifyContent: 'center',
+                        background: 'rgba(0,0,0,0.8)', color: 'white',
+                        zIndex: 10
+                    }}>
+                        {missingPermission ? (
+                            <>
+                                <h3>⚠️ Permission Required</h3>
+                                <p>Browser requires gesture to read files.</p>
+                                <p style={{ fontSize: '0.9em', opacity: 0.8 }}>Please re-open the folder.</p>
+                            </>
+                        ) : (
+                            <>
+                                <h3>⏳ Loading Files...</h3>
+                                <p>Waiting for scanner...</p>
+                            </>
+                        )}
+                    </div>
+                )}
             </div>
 
             <div className="dicom-viewer__status">

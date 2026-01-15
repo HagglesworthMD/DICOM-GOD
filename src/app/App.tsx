@@ -130,7 +130,8 @@ function AppContent() {
                             kind: 'handle',
                             handle: f.handle,
                             name: f.name,
-                            size: f.size
+                            size: f.size,
+                            file: f.file
                         });
                     } else {
                         registry.set(f.fileKey, {

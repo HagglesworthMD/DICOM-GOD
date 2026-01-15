@@ -27,7 +27,7 @@ export type FileKey = string;
 
 /** Registry entry - either a handle (folder mode) or File (drag/drop mode) */
 export type FileRegistryEntry =
-    | { kind: 'handle'; handle: FileSystemFileHandle; name: string; size?: number }
+    | { kind: 'handle'; handle: FileSystemFileHandle; name: string; size?: number; file?: File }
     | { kind: 'file'; file: File; name: string; size: number };
 
 /** Map of fileKey -> actual file/handle */
