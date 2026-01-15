@@ -11,6 +11,7 @@ function createInstance(overrides: Partial<Instance>): Instance {
         sopInstanceUid: '1.2.3',
         seriesInstanceUid: '1.2.3',
         instanceNumber: null,
+        fileKey: 'test-key',
         filePath: 'test.dcm',
         fileSize: 1000,
         ...overrides,

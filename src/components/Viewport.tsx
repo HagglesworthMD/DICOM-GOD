@@ -14,7 +14,7 @@ import {
 import { renderFrame, renderLoading, renderError, drawOverlay } from '../core/canvas2dRenderer';
 import { getTrustBadge, getTrustDescription, verifySeriesGeometry } from '../core/geometryTrust';
 import { isTransferSyntaxSupported } from '../core/types';
-import type { Series, Instance, DecodedFrame, ViewportState } from '../core/types';
+import type { Series, Instance, DecodedFrame, ViewportState, FileRegistry } from '../core/types';
 import './Viewport.css';
 
 const DEFAULT_STATE: ViewportState = {
@@ -31,10 +31,10 @@ const DEFAULT_STATE: ViewportState = {
 
 interface DicomViewerProps {
     series: Series;
-    files: Map<string, File>;
+    fileRegistry: FileRegistry;
 }
 
-export function DicomViewer({ series, files }: DicomViewerProps) {
+export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [viewState, setViewState] = useState<ViewportState>(DEFAULT_STATE);
@@ -48,19 +48,48 @@ export function DicomViewer({ series, files }: DicomViewerProps) {
     const instances = series.instances;
     const currentInstance = instances[viewState.frameIndex];
 
-    // Register files with decode bridge
-    useEffect(() => {
-        const fileEntries = instances.map(instance => {
-            const file = files.get(instance.sopInstanceUid);
-            return file ? { instance, file } : null;
-        }).filter((e): e is { instance: Instance; file: File } => e !== null);
 
-        registerInstanceFiles(fileEntries);
+
+    // Register files with decode bridge via Registry
+    useEffect(() => {
+        let mounted = true;
+
+        const resolveFiles = async () => {
+            const fileEntries: { instance: Instance; file: File }[] = [];
+
+            for (const instance of instances) {
+                const entry = fileRegistry.get(instance.fileKey);
+
+                if (!entry) {
+                    // console.warn(`[DEBUG] No registry entry for key: ${instance.fileKey}`);
+                    continue;
+                }
+
+                try {
+                    let file: File;
+                    if (entry.kind === 'file') {
+                        file = entry.file;
+                    } else {
+                        file = await entry.handle.getFile();
+                    }
+                    fileEntries.push({ instance, file });
+                } catch (err) {
+                    console.error('Failed to resolve file for instance', instance.sopInstanceUid, err);
+                }
+            }
+
+            if (mounted) {
+                registerInstanceFiles(fileEntries);
+            }
+        };
+
+        resolveFiles();
 
         return () => {
+            mounted = false;
             clearInstanceFiles();
         };
-    }, [instances, files]);
+    }, [instances, fileRegistry]);
 
     // Load frame when index changes
     useEffect(() => {
@@ -365,77 +394,14 @@ export function DicomViewer({ series, files }: DicomViewerProps) {
     );
 }
 
-function SeriesMetadata({ series }: { series: Series }) {
-    const firstInstance = series.instances[0];
-    const trustInfo = verifySeriesGeometry(series);
 
-    return (
-        <div className="viewport__series-info">
-            <h3 className="viewport__series-title">
-                <span className="viewport__trust-badge" title={trustInfo.reasons.join('\n')}>
-                    {getTrustBadge(trustInfo.level)}
-                </span>
-                {series.modality} - {series.description}
-            </h3>
-
-            <div className="viewport__metadata">
-                <div className="viewport__meta-group">
-                    <h4>Series Info</h4>
-                    <dl>
-                        <dt>Series Number</dt>
-                        <dd>{series.seriesNumber ?? 'N/A'}</dd>
-                        <dt>Modality</dt>
-                        <dd>{series.modality}</dd>
-                        <dt>Images</dt>
-                        <dd>{series.instances.length}</dd>
-                        <dt>Geometry</dt>
-                        <dd className={`viewport__trust viewport__trust--${trustInfo.level}`}>
-                            {getTrustBadge(trustInfo.level)} {getTrustDescription(trustInfo.level)}
-                        </dd>
-                    </dl>
-                </div>
-
-                {firstInstance && (
-                    <div className="viewport__meta-group">
-                        <h4>Image Info</h4>
-                        <dl>
-                            <dt>Dimensions</dt>
-                            <dd>
-                                {firstInstance.rows && firstInstance.columns
-                                    ? `${firstInstance.columns} × ${firstInstance.rows}`
-                                    : 'N/A'}
-                            </dd>
-                            <dt>Bits</dt>
-                            <dd>{firstInstance.bitsAllocated ?? 'N/A'}</dd>
-                            <dt>Transfer Syntax</dt>
-                            <dd className={isTransferSyntaxSupported(firstInstance.transferSyntaxUid) ? '' : 'viewport__unsupported'}>
-                                {firstInstance.transferSyntaxUid?.split('.').pop() ?? 'N/A'}
-                            </dd>
-                        </dl>
-                    </div>
-                )}
-            </div>
-
-            {trustInfo.reasons.length > 0 && trustInfo.level !== 'verified' && (
-                <div className="viewport__trust-reasons">
-                    <h4>Geometry Notes</h4>
-                    <ul>
-                        {trustInfo.reasons.map((r, i) => <li key={i}>{r}</li>)}
-                    </ul>
-                </div>
-            )}
-        </div>
-    );
-}
 
 export function Viewport() {
     const viewerEnabled = getFlag('viewerEnabled');
-    const { selectedSeries } = useAppState();
-
-    // TODO: Wire up file mapping from indexing
-    // For now, show metadata view since we need proper file mapping
+    const { selectedSeries, fileRegistry } = useAppState();
 
     if (!viewerEnabled) {
+        // ... (disabled state)
         return (
             <main className="viewport viewport--disabled">
                 <div className="viewport__placeholder">
@@ -448,6 +414,7 @@ export function Viewport() {
     }
 
     if (!selectedSeries) {
+        // ... (placeholder state)
         return (
             <main className="viewport">
                 <div className="viewport__placeholder">
@@ -489,11 +456,9 @@ export function Viewport() {
         );
     }
 
-    // For now, show metadata view since we need file mapping
-    // TODO: Wire up proper file mapping from indexing
     return (
-        <main className="viewport viewport--with-series">
-            <SeriesMetadata series={selectedSeries} />
+        <main className="viewport">
+            <DicomViewer series={selectedSeries} fileRegistry={fileRegistry} />
         </main>
     );
 }

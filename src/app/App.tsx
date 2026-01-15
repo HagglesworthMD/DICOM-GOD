@@ -19,7 +19,7 @@ import { Icon } from '../ui/Icon';
 import { enableLocalOnlyMode, disableLocalOnlyMode, isLocalOnlyMode } from '../core/localOnly';
 import { createWorkerBridge, isWorkerSupported, type IndexingJob } from '../core/ipc';
 import { createLogger } from '../core/logger';
-import type { FileEntry, AppError } from '../core/types';
+import type { FileEntry, AppError, FileRegistry } from '../core/types';
 import '../styles/app.css';
 
 const log = createLogger('App');
@@ -120,6 +120,30 @@ function AppContent() {
         (files: FileEntry[]) => {
             log.info(`Received ${files.length} files`);
             dispatch({ type: 'SET_FILES', files });
+
+            // Build registry map
+            const registry: FileRegistry = new Map();
+            for (const f of files) {
+                if (f.fileKey) {
+                    if (f.handle) {
+                        registry.set(f.fileKey, {
+                            kind: 'handle',
+                            handle: f.handle,
+                            name: f.name,
+                            size: f.size
+                        });
+                    } else {
+                        registry.set(f.fileKey, {
+                            kind: 'file',
+                            file: f.file,
+                            name: f.name,
+                            size: f.size
+                        });
+                    }
+                }
+            }
+            dispatch({ type: 'SET_FILE_REGISTRY', registry });
+
             dispatch({
                 type: 'SET_STATUS',
                 message: `Scanning ${files.length} file${files.length === 1 ? '' : 's'}...`,

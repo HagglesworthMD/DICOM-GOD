@@ -91,6 +91,7 @@ export function DropZone({ onFiles, disabled, children, className = '' }: DropZo
                             name: file.name,
                             size: file.size,
                             file,
+                            fileKey: crypto.randomUUID(),
                         });
                     }
                 };
@@ -116,6 +117,7 @@ export function DropZone({ onFiles, disabled, children, className = '' }: DropZo
                                 size: file.size,
                                 path: entryPath,
                                 file,
+                                fileKey: entryPath,
                             });
                         } else if (entry.kind === 'directory') {
                             await processDirectory(entry as FileSystemDirectoryHandle, results, entryPath);

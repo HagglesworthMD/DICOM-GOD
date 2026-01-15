@@ -13,7 +13,25 @@ export interface FileEntry {
     size: number;
     path?: string;
     file: File;
+    /** Unique key for file registry lookup */
+    fileKey: FileKey;
+    handle?: FileSystemFileHandle;
 }
+
+// ============================================================================
+// File Registry (first-class file mapping)
+// ============================================================================
+
+/** Stable key for file registry lookup */
+export type FileKey = string;
+
+/** Registry entry - either a handle (folder mode) or File (drag/drop mode) */
+export type FileRegistryEntry =
+    | { kind: 'handle'; handle: FileSystemFileHandle; name: string; size?: number }
+    | { kind: 'file'; file: File; name: string; size: number };
+
+/** Map of fileKey -> actual file/handle */
+export type FileRegistry = Map<FileKey, FileRegistryEntry>;
 
 // ============================================================================
 // DICOM Data Model
@@ -56,23 +74,36 @@ export interface Instance {
     sopInstanceUid: string;
     seriesInstanceUid: string;
     instanceNumber: number | null;
+
+    /** Stable key for resolving to actual File via FileRegistry */
+    fileKey: FileKey;
+
+    /** Original file path (for display only, not for lookup) */
     filePath: string;
     fileSize: number;
+
+    // Geometry
     imageOrientationPatient?: string;
     imagePositionPatient?: string;
     pixelSpacing?: string;
     rows?: number;
     columns?: number;
+
+    // Pixel format
     bitsAllocated?: number;
     bitsStored?: number;
     highBit?: number;
     pixelRepresentation?: number;
     transferSyntaxUid?: string;
     photometricInterpretation?: string;
+
+    // Windowing defaults
     windowCenter?: number;
     windowWidth?: number;
     rescaleSlope?: number;
     rescaleIntercept?: number;
+
+    // Multi-frame
     samplesPerPixel?: number;
     numberOfFrames?: number;
 }

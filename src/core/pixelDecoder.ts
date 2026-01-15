@@ -59,8 +59,12 @@ export async function decodePixelData(
     const buffer = await file.arrayBuffer();
     const view = new DataView(buffer);
 
+
+
     // Parse to get pixel info and locate pixel data
     const info = parseForPixelData(buffer, view);
+
+
 
     // Check transfer syntax support
     if (!isTransferSyntaxSupported(info.transferSyntaxUid)) {

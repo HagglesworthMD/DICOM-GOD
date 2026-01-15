@@ -44,6 +44,8 @@ async function handleDecode(msg: DecodeWorkerRequest & { type: 'DECODE' }) {
             return;
         }
 
+
+
         sendResponse({
             type: 'DECODED',
             requestId,
@@ -55,12 +57,15 @@ async function handleDecode(msg: DecodeWorkerRequest & { type: 'DECODE' }) {
         if (currentRequestId !== requestId) return;
 
         const isUnsupported = err instanceof UnsupportedTransferSyntaxError;
+        const errorMsg = err instanceof Error ? err.message : 'Decode failed';
+
+
 
         sendResponse({
             type: 'ERROR',
             requestId,
             instanceUid,
-            error: err instanceof Error ? err.message : 'Decode failed',
+            error: errorMsg,
             isUnsupported,
         });
     } finally {

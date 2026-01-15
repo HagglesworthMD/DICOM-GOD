@@ -266,6 +266,10 @@ function addInstance(series: Series, parsed: ParsedDicom, file: FileEntry) {
         sopInstanceUid: uid,
         seriesInstanceUid: series.seriesInstanceUid,
         instanceNumber: parsed.instanceNumber ?? null,
+
+        // Use the fileKey from enumeration - this is the stable key for file lookup
+        fileKey: file.fileKey,
+
         filePath: file.path ?? file.name,
         fileSize: file.size,
         imageOrientationPatient: parsed.imageOrientationPatient,

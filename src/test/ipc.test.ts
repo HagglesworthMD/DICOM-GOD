@@ -11,12 +11,14 @@ describe('IPC Message Types', () => {
             const msg: WorkerRequest = {
                 type: 'START_INDEX',
                 requestId: 'test-123',
-                files: [{ name: 'test.dcm', size: 1000, file: new File([], 'test.dcm') }],
+                files: [{ name: 'test.dcm', size: 1000, file: new File([], 'test.dcm'), fileKey: 'test-key' }],
             };
 
             expect(msg.type).toBe('START_INDEX');
             expect(msg.requestId).toBeDefined();
-            expect(msg.files).toBeInstanceOf(Array);
+            if (msg.type === 'START_INDEX') {
+                expect(msg.files).toBeInstanceOf(Array);
+            }
         });
 
         it('CANCEL has required fields', () => {

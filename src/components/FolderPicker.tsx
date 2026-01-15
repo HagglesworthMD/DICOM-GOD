@@ -88,6 +88,8 @@ export function FolderPicker({ onFilesSelected, disabled }: FolderPickerProps) {
                             size: file.size,
                             path: entryPath,
                             file,
+                            fileKey: entryPath, // Use path as unique key for folder mode
+                            handle: fileHandle,
                         });
                     } else if (entry.kind === 'directory') {
                         await readDir(entry as FileSystemDirectoryHandle, entryPath);

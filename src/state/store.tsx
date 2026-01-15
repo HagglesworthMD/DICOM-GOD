@@ -4,7 +4,7 @@
  */
 
 import { createContext, useContext, useReducer, type ReactNode, type Dispatch } from 'react';
-import type { FileEntry, AppError, Study, Series, IndexProgress } from '../core/types';
+import type { FileEntry, AppError, Study, Series, IndexProgress, FileRegistry } from '../core/types';
 
 // State shape
 export interface AppState {
@@ -32,6 +32,8 @@ export interface AppState {
     hasStoredFolder: boolean;
     /** Name of the stored folder */
     storedFolderName: string | null;
+    /** File registry: fileKey -> File/handle */
+    fileRegistry: FileRegistry;
 }
 
 const initialState: AppState = {
@@ -48,6 +50,8 @@ const initialState: AppState = {
     selectedSeries: null,
     hasStoredFolder: false,
     storedFolderName: null,
+    // Step 3: File registry
+    fileRegistry: new Map(),
 };
 
 // Actions
@@ -67,7 +71,10 @@ export type AppAction =
     | { type: 'CLEAR_STUDIES' }
     | { type: 'SET_INDEX_PROGRESS'; progress: IndexProgress | null }
     | { type: 'SELECT_SERIES'; series: Series | null }
-    | { type: 'SET_STORED_FOLDER'; hasFolder: boolean; name: string | null };
+    | { type: 'SET_STORED_FOLDER'; hasFolder: boolean; name: string | null }
+    // Step 3: File registry
+    | { type: 'SET_FILE_REGISTRY'; registry: FileRegistry }
+    | { type: 'CLEAR_FILE_REGISTRY' };
 
 // Reducer
 function reducer(state: AppState, action: AppAction): AppState {
@@ -119,6 +126,12 @@ function reducer(state: AppState, action: AppAction): AppState {
                 hasStoredFolder: action.hasFolder,
                 storedFolderName: action.name
             };
+
+        // Step 3: File registry
+        case 'SET_FILE_REGISTRY':
+            return { ...state, fileRegistry: action.registry };
+        case 'CLEAR_FILE_REGISTRY':
+            return { ...state, fileRegistry: new Map() };
 
         default:
             return state;
