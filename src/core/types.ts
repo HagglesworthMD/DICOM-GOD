@@ -181,6 +181,24 @@ export interface ViewportState {
     isPlaying: boolean;
     /** Cine FPS */
     cineFrameRate: number;
+    /** Active tool */
+    activeTool: ViewportTool;
+    /** Measurements (image pixel coords) */
+    measurements: LengthMeasurement[];
+}
+
+/** Available viewport tools */
+export type ViewportTool = 'hand' | 'length';
+
+/** Length measurement in image pixel coordinates */
+export interface LengthMeasurement {
+    id: string;
+    /** Start point in image pixels */
+    startX: number;
+    startY: number;
+    /** End point in image pixels */
+    endX: number;
+    endY: number;
 }
 
 export const DEFAULT_VIEWPORT_STATE: ViewportState = {
@@ -193,6 +211,8 @@ export const DEFAULT_VIEWPORT_STATE: ViewportState = {
     invert: false,
     isPlaying: false,
     cineFrameRate: 15,
+    activeTool: 'hand',
+    measurements: [],
 };
 
 // ============================================================================

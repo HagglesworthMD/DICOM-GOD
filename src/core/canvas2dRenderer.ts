@@ -4,7 +4,7 @@
  */
 
 import { applyWindowToRGBA } from './voi';
-import type { DecodedFrame, ViewportState } from './types';
+import type { DecodedFrame, ViewportState, LengthMeasurement, GeometryTrustInfo } from './types';
 
 export interface RenderResult {
     success: boolean;
@@ -162,6 +162,15 @@ export function drawOverlay(
         windowWidth: number;
         zoom: number;
         dimensions?: { width: number; height: number };
+        pixelSpacing?: number[]; // [rowSpacing, colSpacing] in mm
+        geometryTrust?: GeometryTrustInfo;
+        measurements?: LengthMeasurement[];
+        inProgressMeasurement?: { startX: number; startY: number; endX: number; endY: number } | null;
+        imageToCanvasTransform?: {
+            scale: number;
+            offsetX: number;
+            offsetY: number;
+        };
     }
 ): void {
     const ctx = canvas.getContext('2d');
@@ -193,13 +202,16 @@ export function drawOverlay(
     ctx.fillText(wcText, canvas.width - windowWidth, padding + 14);
     ctx.fillText(wwText, canvas.width - windowWidth, padding + 28);
 
-    // Bottom-left: Zoom
-    const zoomText = `Zoom: ${Math.round(info.zoom * 100)}%`;
-    const zoomWidth = ctx.measureText(zoomText).width + padding * 2;
+    // Bottom-left: Zoom + Spacing source
+    let bottomLeftText = `Zoom: ${Math.round(info.zoom * 100)}%`;
+    if (info.geometryTrust?.spacingSource) {
+        bottomLeftText += ` | Spacing: ${info.geometryTrust.spacingSource}`;
+    }
+    const zoomWidth = ctx.measureText(bottomLeftText).width + padding * 2;
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
     ctx.fillRect(padding, canvas.height - 30, zoomWidth, 20);
     ctx.fillStyle = '#fff';
-    ctx.fillText(zoomText, padding * 2, canvas.height - 16);
+    ctx.fillText(bottomLeftText, padding * 2, canvas.height - 16);
 
     // Bottom-right: Dimensions
     if (info.dimensions) {
@@ -209,6 +221,94 @@ export function drawOverlay(
         ctx.fillRect(canvas.width - dimWidth - padding, canvas.height - 30, dimWidth, 20);
         ctx.fillStyle = '#fff';
         ctx.fillText(dimText, canvas.width - dimWidth, canvas.height - 16);
+    }
+
+    // Draw measurements
+    const transform = info.imageToCanvasTransform;
+    if (transform) {
+        const allMeasurements = [
+            ...(info.measurements || []),
+            ...(info.inProgressMeasurement ? [info.inProgressMeasurement] : [])
+        ];
+
+        for (const m of allMeasurements) {
+            // Convert image coords to canvas coords
+            const x1 = m.startX * transform.scale + transform.offsetX;
+            const y1 = m.startY * transform.scale + transform.offsetY;
+            const x2 = m.endX * transform.scale + transform.offsetX;
+            const y2 = m.endY * transform.scale + transform.offsetY;
+
+            // Draw line
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+
+            // Draw endpoints
+            ctx.fillStyle = '#00ff00';
+            ctx.beginPath();
+            ctx.arc(x1, y1, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(x2, y2, 4, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Calculate distance
+            const dxPx = m.endX - m.startX;
+            const dyPx = m.endY - m.startY;
+            const distPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx);
+
+            // Build label
+            let label = `${distPx.toFixed(1)} px`;
+            let warning = '';
+
+            // Calculate mm if spacing available
+            if (info.pixelSpacing && info.pixelSpacing.length >= 2) {
+                const rowSpacing = info.pixelSpacing[0];
+                const colSpacing = info.pixelSpacing[1];
+                const dxMm = dxPx * colSpacing;
+                const dyMm = dyPx * rowSpacing;
+                const distMm = Math.sqrt(dxMm * dxMm + dyMm * dyMm);
+
+                const trustLevel = info.geometryTrust?.level;
+                const spacingSource = info.geometryTrust?.spacingSource;
+
+                if (trustLevel === 'untrusted') {
+                    // Unsafe geometry - show px only with warning
+                    warning = '⚠️ unsafe geometry';
+                } else if (spacingSource === 'ImagerPixelSpacing') {
+                    // ImagerPixelSpacing - show mm with warning
+                    label = `${distMm.toFixed(1)} mm (${distPx.toFixed(0)} px)`;
+                    warning = '⚠️ ImagerPixelSpacing';
+                } else if (spacingSource === 'PixelSpacing') {
+                    // Good PixelSpacing - show mm
+                    label = `${distMm.toFixed(1)} mm`;
+                } else {
+                    // Unknown spacing
+                    warning = '? unknown spacing';
+                }
+            } else {
+                warning = 'no spacing data';
+            }
+
+            // Draw label background
+            const midX = (x1 + x2) / 2;
+            const midY = (y1 + y2) / 2;
+            const fullLabel = warning ? `${label} ${warning}` : label;
+
+            ctx.font = '11px monospace';
+            const labelWidth = ctx.measureText(fullLabel).width + 8;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+            ctx.fillRect(midX - labelWidth / 2, midY - 18, labelWidth, 16);
+
+            // Draw label text
+            ctx.fillStyle = warning ? '#ffcc00' : '#00ff00';
+            ctx.textAlign = 'center';
+            ctx.fillText(fullLabel, midX, midY - 6);
+            ctx.textAlign = 'left';
+        }
     }
 
     ctx.restore();

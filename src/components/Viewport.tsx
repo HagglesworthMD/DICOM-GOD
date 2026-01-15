@@ -29,6 +29,8 @@ const DEFAULT_STATE: ViewportState = {
     invert: false,
     isPlaying: false,
     cineFrameRate: 15,
+    activeTool: 'hand',
+    measurements: [],
 };
 
 // ============================================================================
@@ -103,9 +105,12 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const [missingPermission, setMissingPermission] = useState(false);
     const [waitingForFiles, setWaitingForFiles] = useState(false);
     const cineIntervalRef = useRef<number | null>(null);
-    const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | null }>({ startX: 0, startY: 0, mode: null });
+    const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | 'measure' | null }>({ startX: 0, startY: 0, mode: null });
     const wheelAccumulator = useRef(0);
     const activeRequestId = useRef(0);
+
+    // Measurement in-progress state (image pixel coords)
+    const measureRef = useRef<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
 
     // LRU cache for decoded frames (per-component instance = per-series due to key remount)
     const frameCacheRef = useRef(new FrameLRUCache(CACHE_MAX_SIZE));
@@ -397,6 +402,42 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         if (currentFrame) {
             renderFrame(canvas, currentFrame, viewState);
             hasRenderedFrameRef.current = true; // Mark that we've successfully rendered
+
+            // Compute image-to-canvas transform for measurements
+            const imageAspect = currentFrame.width / currentFrame.height;
+            const canvasAspect = canvas.width / canvas.height;
+            let displayWidth: number;
+            let displayHeight: number;
+
+            if (imageAspect > canvasAspect) {
+                displayWidth = canvas.width;
+                displayHeight = canvas.width / imageAspect;
+            } else {
+                displayHeight = canvas.height;
+                displayWidth = canvas.height * imageAspect;
+            }
+
+            displayWidth *= viewState.zoom;
+            displayHeight *= viewState.zoom;
+
+            const offsetX = (canvas.width - displayWidth) / 2 + viewState.panX;
+            const offsetY = (canvas.height - displayHeight) / 2 + viewState.panY;
+            const scale = displayWidth / currentFrame.width;
+
+            // Get pixel spacing from current instance
+            let pixelSpacing: number[] | undefined;
+            if (currentInstance?.pixelSpacing) {
+                const parts = currentInstance.pixelSpacing.split('\\').map(parseFloat);
+                if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+                    pixelSpacing = parts;
+                }
+            } else if (currentInstance?.imagerPixelSpacing) {
+                const parts = currentInstance.imagerPixelSpacing.split('\\').map(parseFloat);
+                if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+                    pixelSpacing = parts;
+                }
+            }
+
             drawOverlay(canvas, {
                 frameIndex: viewState.frameIndex,
                 totalFrames: instances.length,
@@ -404,9 +445,14 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 windowWidth: viewState.windowWidth,
                 zoom: viewState.zoom,
                 dimensions: { width: currentFrame.width, height: currentFrame.height },
+                pixelSpacing,
+                geometryTrust: series.geometryTrustInfo,
+                measurements: viewState.measurements,
+                inProgressMeasurement: measureRef.current,
+                imageToCanvasTransform: { scale, offsetX, offsetY }
             });
         }
-    }, [currentFrame, viewState, loading, error, isUnsupported, instances.length]);
+    }, [currentFrame, viewState, loading, error, isUnsupported, instances.length, currentInstance, series.geometryTrustInfo]);
 
     // Resize handler
     useEffect(() => {
@@ -588,7 +634,60 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         return () => container.removeEventListener('wheel', onWheel);
     }, [series.seriesInstanceUid, instances.length]);
 
+    // Convert canvas coordinates to image pixel coordinates
+    const canvasToImageCoords = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
+        const canvas = canvasRef.current;
+        const container = containerRef.current;
+        if (!canvas || !container || !currentFrame) return null;
+
+        const rect = canvas.getBoundingClientRect();
+        const canvasX = clientX - rect.left;
+        const canvasY = clientY - rect.top;
+
+        // Reverse the display transform from renderFrame
+        const imageAspect = currentFrame.width / currentFrame.height;
+        const canvasAspect = canvas.width / canvas.height;
+
+        let displayWidth: number;
+        let displayHeight: number;
+
+        if (imageAspect > canvasAspect) {
+            displayWidth = canvas.width;
+            displayHeight = canvas.width / imageAspect;
+        } else {
+            displayHeight = canvas.height;
+            displayWidth = canvas.height * imageAspect;
+        }
+
+        displayWidth *= viewState.zoom;
+        displayHeight *= viewState.zoom;
+
+        const imageX = (canvas.width - displayWidth) / 2 + viewState.panX;
+        const imageY = (canvas.height - displayHeight) / 2 + viewState.panY;
+
+        // Convert canvas coords to image pixel coords
+        const imgPixelX = ((canvasX - imageX) / displayWidth) * currentFrame.width;
+        const imgPixelY = ((canvasY - imageY) / displayHeight) * currentFrame.height;
+
+        return { x: imgPixelX, y: imgPixelY };
+    }, [currentFrame, viewState.zoom, viewState.panX, viewState.panY]);
+
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
+        // Measurement tool takes priority on left click
+        if (viewState.activeTool === 'length' && e.button === 0 && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+            const imgCoords = canvasToImageCoords(e.clientX, e.clientY);
+            if (imgCoords) {
+                measureRef.current = {
+                    startX: imgCoords.x,
+                    startY: imgCoords.y,
+                    endX: imgCoords.x,
+                    endY: imgCoords.y
+                };
+                dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'measure' };
+            }
+            return;
+        }
+
         if (e.button === 0 && (e.altKey || e.ctrlKey)) {
             // Window/Level
             dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'wl' };
@@ -599,10 +698,21 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             // Pan
             dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'pan' };
         }
-    }, []);
+    }, [viewState.activeTool, canvasToImageCoords]);
 
     const handleMouseMove = useCallback((e: React.MouseEvent) => {
         if (!dragRef.current.mode) return;
+
+        if (dragRef.current.mode === 'measure') {
+            const imgCoords = canvasToImageCoords(e.clientX, e.clientY);
+            if (imgCoords && measureRef.current) {
+                measureRef.current.endX = imgCoords.x;
+                measureRef.current.endY = imgCoords.y;
+                // Force re-render to update measurement line
+                setViewState(prev => ({ ...prev }));
+            }
+            return;
+        }
 
         const dx = e.clientX - dragRef.current.startX;
         const dy = e.clientY - dragRef.current.startY;
@@ -623,9 +733,29 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
         dragRef.current.startX = e.clientX;
         dragRef.current.startY = e.clientY;
-    }, []);
+    }, [canvasToImageCoords]);
 
     const handleMouseUp = useCallback(() => {
+        // Commit measurement if we were drawing one
+        if (dragRef.current.mode === 'measure' && measureRef.current) {
+            const m = measureRef.current;
+            // Only add if it's not a zero-length line
+            const dx = m.endX - m.startX;
+            const dy = m.endY - m.startY;
+            if (Math.sqrt(dx * dx + dy * dy) > 2) {
+                setViewState(prev => ({
+                    ...prev,
+                    measurements: [...prev.measurements, {
+                        id: crypto.randomUUID(),
+                        startX: m.startX,
+                        startY: m.startY,
+                        endX: m.endX,
+                        endY: m.endY
+                    }]
+                }));
+            }
+            measureRef.current = null;
+        }
         dragRef.current.mode = null;
     }, []);
 
@@ -653,6 +783,13 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                     </span>
                 </div>
                 <div className="dicom-viewer__controls">
+                    <button
+                        onClick={() => setViewState(prev => ({ ...prev, activeTool: prev.activeTool === 'hand' ? 'length' : 'hand' }))}
+                        title={viewState.activeTool === 'hand' ? 'Hand Tool (H) - Click to switch to Measure' : 'Length Tool (M) - Click to switch to Hand'}
+                        style={{ fontWeight: viewState.activeTool === 'length' ? 'bold' : 'normal' }}
+                    >
+                        {viewState.activeTool === 'hand' ? '✋' : '📏'}
+                    </button>
                     <button onClick={toggleCine} title="Toggle cine (Space)">
                         {viewState.isPlaying ? '⏸' : '▶'}
                     </button>
@@ -662,6 +799,15 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                     <button onClick={() => setViewState({ ...DEFAULT_STATE, windowCenter: currentFrame?.windowCenter ?? 40, windowWidth: currentFrame?.windowWidth ?? 400 })} title="Reset (R)">
                         ↺
                     </button>
+                    {viewState.measurements.length > 0 && (
+                        <button
+                            onClick={() => setViewState(prev => ({ ...prev, measurements: [] }))}
+                            title="Clear all measurements"
+                            style={{ color: '#f66' }}
+                        >
+                            🗑
+                        </button>
+                    )}
                 </div>
             </div>
 
