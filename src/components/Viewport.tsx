@@ -134,6 +134,9 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     // Track if we've successfully rendered at least one frame (for safe cine overlay suppression)
     const hasRenderedFrameRef = useRef(false);
 
+    // Flicker-free cine: hold last successfully decoded frame to display while buffering
+    const lastGoodFrameRef = useRef<DecodedFrame | null>(null);
+
 
 
     const instances = series.instances;
@@ -394,77 +397,91 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             canvas.height = rect.height;
         }
 
-        // During cine, suppress loading overlay ONLY if we've already rendered at least one frame
-        // This prevents flicker while keeping honest "Loading..." for initial load
-        const canSuppressLoading = viewState.isPlaying && hasRenderedFrameRef.current;
-        if (loading && !canSuppressLoading) {
-            renderLoading(canvas, 'Loading...');
-            return;
-        }
-
+        // Error state takes priority
         if (error) {
             renderError(canvas, error, isUnsupported);
             return;
         }
 
+        // Determine which frame to render (flicker-free: prefer currentFrame, fallback to last good)
+        let frameToRender: DecodedFrame | null = currentFrame;
+        let isBuffering = false;
+
         if (currentFrame) {
-            renderFrame(canvas, currentFrame, viewState);
-            hasRenderedFrameRef.current = true; // Mark that we've successfully rendered
-
-            // Compute image-to-canvas transform for measurements
-            const imageAspect = currentFrame.width / currentFrame.height;
-            const canvasAspect = canvas.width / canvas.height;
-            let displayWidth: number;
-            let displayHeight: number;
-
-            if (imageAspect > canvasAspect) {
-                displayWidth = canvas.width;
-                displayHeight = canvas.width / imageAspect;
-            } else {
-                displayHeight = canvas.height;
-                displayWidth = canvas.height * imageAspect;
-            }
-
-            displayWidth *= viewState.zoom;
-            displayHeight *= viewState.zoom;
-
-            const offsetX = (canvas.width - displayWidth) / 2 + viewState.panX;
-            const offsetY = (canvas.height - displayHeight) / 2 + viewState.panY;
-            const scale = displayWidth / currentFrame.width;
-
-            // Get pixel spacing from current instance
-            let pixelSpacing: number[] | undefined;
-            if (currentInstance?.pixelSpacing) {
-                const parts = currentInstance.pixelSpacing.split('\\').map(parseFloat);
-                if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-                    pixelSpacing = parts;
-                }
-            } else if (currentInstance?.imagerPixelSpacing) {
-                const parts = currentInstance.imagerPixelSpacing.split('\\').map(parseFloat);
-                if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-                    pixelSpacing = parts;
-                }
-            }
-
-            drawOverlay(canvas, {
-                frameIndex: viewState.frameIndex,
-                totalFrames: instances.length,
-                windowCenter: viewState.windowCenter,
-                windowWidth: viewState.windowWidth,
-                zoom: viewState.zoom,
-                dimensions: { width: currentFrame.width, height: currentFrame.height },
-                pixelSpacing,
-                geometryTrust: series.geometryTrustInfo,
-                measurements: viewState.measurements,
-                inProgressMeasurement: measureRef.current,
-                imageToCanvasTransform: { scale, offsetX, offsetY },
-                cineInfo: {
-                    isPlaying: viewState.isPlaying,
-                    fps: viewState.cineFrameRate,
-                    canCine
-                }
-            });
+            // New frame available - update last good frame ref
+            lastGoodFrameRef.current = currentFrame;
+        } else if (lastGoodFrameRef.current && hasRenderedFrameRef.current) {
+            // No new frame but we have a last good frame - use it (flicker-free)
+            frameToRender = lastGoodFrameRef.current;
+            isBuffering = true;
         }
+
+        // Handle loading state
+        if (!frameToRender) {
+            if (loading) {
+                renderLoading(canvas, 'Loading...');
+            }
+            return;
+        }
+
+        // Render the frame (current or last good)
+        renderFrame(canvas, frameToRender, viewState);
+        hasRenderedFrameRef.current = true;
+
+        // Compute image-to-canvas transform for measurements
+        const imageAspect = frameToRender.width / frameToRender.height;
+        const canvasAspect = canvas.width / canvas.height;
+        let displayWidth: number;
+        let displayHeight: number;
+
+        if (imageAspect > canvasAspect) {
+            displayWidth = canvas.width;
+            displayHeight = canvas.width / imageAspect;
+        } else {
+            displayHeight = canvas.height;
+            displayWidth = canvas.height * imageAspect;
+        }
+
+        displayWidth *= viewState.zoom;
+        displayHeight *= viewState.zoom;
+
+        const offsetX = (canvas.width - displayWidth) / 2 + viewState.panX;
+        const offsetY = (canvas.height - displayHeight) / 2 + viewState.panY;
+        const scale = displayWidth / frameToRender.width;
+
+        // Get pixel spacing from current instance
+        let pixelSpacing: number[] | undefined;
+        if (currentInstance?.pixelSpacing) {
+            const parts = currentInstance.pixelSpacing.split('\\').map(parseFloat);
+            if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+                pixelSpacing = parts;
+            }
+        } else if (currentInstance?.imagerPixelSpacing) {
+            const parts = currentInstance.imagerPixelSpacing.split('\\').map(parseFloat);
+            if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+                pixelSpacing = parts;
+            }
+        }
+
+        drawOverlay(canvas, {
+            frameIndex: viewState.frameIndex,
+            totalFrames: instances.length,
+            windowCenter: viewState.windowCenter,
+            windowWidth: viewState.windowWidth,
+            zoom: viewState.zoom,
+            dimensions: { width: frameToRender.width, height: frameToRender.height },
+            pixelSpacing,
+            geometryTrust: series.geometryTrustInfo,
+            measurements: viewState.measurements,
+            inProgressMeasurement: measureRef.current,
+            imageToCanvasTransform: { scale, offsetX, offsetY },
+            cineInfo: {
+                isPlaying: viewState.isPlaying,
+                fps: viewState.cineFrameRate,
+                canCine,
+                isBuffering
+            }
+        });
     }, [currentFrame, viewState, loading, error, isUnsupported, instances.length, currentInstance, series.geometryTrustInfo, canCine]);
 
     // Resize handler

@@ -10,8 +10,8 @@ import './DropZone.css';
 
 const log = createLogger('DropZone');
 
-// Extensions to skip (obvious non-DICOM images)
-const SKIP_EXTENSIONS = /\.(jpe?g|png|gif|bmp|webp|tiff?|heic|svg|ico|pdf|txt|json|xml|html?|css|js|ts|md|log)$/i;
+// Extensions to skip (obvious non-DICOM files: images, videos, documents, archives, code)
+const SKIP_EXTENSIONS = /\.(jpe?g|png|gif|bmp|webp|tiff?|heic|svg|ico|pdf|txt|json|xml|html?|css|js|ts|md|log|mp4|avi|mov|mkv|wmv|flv|webm|mp3|wav|ogg|aac|zip|tar|gz|rar|7z|exe|dll|so|dylib|py|rb|java|class|jar)$/i;
 
 interface DropZoneProps {
     onFiles: (files: FileEntry[]) => void;

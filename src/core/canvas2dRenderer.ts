@@ -175,6 +175,7 @@ export function drawOverlay(
             isPlaying: boolean;
             fps: number;
             canCine: boolean;
+            isBuffering?: boolean;
         };
     }
 ): void {
@@ -195,8 +196,13 @@ export function drawOverlay(
 
     if (info.cineInfo) {
         if (info.cineInfo.isPlaying) {
-            frameText += ` ▶ CINE ${info.cineInfo.fps}fps`;
-            cineColor = '#4f4'; // Green when playing
+            if (info.cineInfo.isBuffering) {
+                frameText += ` ⏳ buffering`;
+                cineColor = '#ff4'; // Yellow when buffering
+            } else {
+                frameText += ` ▶ CINE ${info.cineInfo.fps}fps`;
+                cineColor = '#4f4'; // Green when playing
+            }
         } else if (!info.cineInfo.canCine) {
             frameText += ` ⊘ CINE disabled`;
             cineColor = '#888'; // Gray when disabled
