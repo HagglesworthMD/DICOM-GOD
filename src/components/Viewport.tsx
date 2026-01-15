@@ -35,7 +35,8 @@ const DEFAULT_STATE: ViewportState = {
 // LRU Frame Cache
 // ============================================================================
 const CACHE_MAX_SIZE = 32;
-const PREFETCH_AHEAD = 4;
+const PREFETCH_AHEAD = 6;    // Frames to prefetch in nav direction
+const PREFETCH_BEHIND = 2;   // Frames to prefetch behind (for backscroll)
 const PREFETCH_MAX_INFLIGHT = 1;
 const DEBUG_PREFETCH = false;
 
@@ -111,8 +112,16 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
     // Prefetch state
     const prefetchQueueRef = useRef<Instance[]>([]);
+    const prefetchQueuedSetRef = useRef(new Set<string>()); // Dedupe
     const prefetchInflightRef = useRef(0);
     const prefetchGenerationRef = useRef(0); // Invalidation token
+
+    // Navigation direction tracking (+1 forward, -1 backward)
+    const lastNavDirRef = useRef<1 | -1>(1);
+
+    // Time-based cine state
+    const cineStartTimeRef = useRef(0);
+    const cineStartIndexRef = useRef(0);
 
 
 
@@ -310,16 +319,41 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         }
     }, []);
 
-    // Schedule prefetch after frame index changes
+    // Schedule prefetch after frame index changes (direction-aware)
     useEffect(() => {
         const startIdx = viewState.frameIndex;
+        const dir = lastNavDirRef.current;
         const queue: Instance[] = [];
+        const queuedSet = prefetchQueuedSetRef.current;
+        queuedSet.clear();
 
-        // Queue next K frames (wrapping for cine)
+        // Prefetch ahead in navigation direction
         for (let i = 1; i <= PREFETCH_AHEAD; i++) {
-            const idx = (startIdx + i) % instances.length;
-            if (instances[idx]) {
-                queue.push(instances[idx]);
+            let idx: number;
+            if (dir > 0) {
+                idx = (startIdx + i) % instances.length;
+            } else {
+                idx = (startIdx - i + instances.length) % instances.length;
+            }
+            const inst = instances[idx];
+            if (inst && !queuedSet.has(inst.fileKey)) {
+                queue.push(inst);
+                queuedSet.add(inst.fileKey);
+            }
+        }
+
+        // Prefetch behind (opposite direction) for back-scroll resilience
+        for (let i = 1; i <= PREFETCH_BEHIND; i++) {
+            let idx: number;
+            if (dir > 0) {
+                idx = (startIdx - i + instances.length) % instances.length;
+            } else {
+                idx = (startIdx + i) % instances.length;
+            }
+            const inst = instances[idx];
+            if (inst && !queuedSet.has(inst.fileKey)) {
+                queue.push(inst);
+                queuedSet.add(inst.fileKey);
             }
         }
 
@@ -440,24 +474,50 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             const newPlaying = !prev.isPlaying;
 
             if (newPlaying) {
+                // Set navigation direction to forward for cine
+                lastNavDirRef.current = 1;
+
+                // Time-based cine: record start time and index
+                cineStartTimeRef.current = performance.now();
+                cineStartIndexRef.current = prev.frameIndex;
+                const frameDurationMs = 1000 / prev.cineFrameRate;
+                const totalFrames = instances.length;
+
                 // Kickstart prefetch for smoother cine start
                 const queue: Instance[] = [];
+                const queuedSet = prefetchQueuedSetRef.current;
+                queuedSet.clear();
                 for (let i = 1; i <= PREFETCH_AHEAD; i++) {
-                    const idx = (prev.frameIndex + i) % instances.length;
-                    if (instances[idx]) queue.push(instances[idx]);
+                    const idx = (prev.frameIndex + i) % totalFrames;
+                    const inst = instances[idx];
+                    if (inst && !queuedSet.has(inst.fileKey)) {
+                        queue.push(inst);
+                        queuedSet.add(inst.fileKey);
+                    }
                 }
                 prefetchQueueRef.current = queue;
                 runPrefetchPump();
 
+                // Time-based cine interval (catch-up skip)
                 cineIntervalRef.current = window.setInterval(() => {
-                    setViewState(p => ({
-                        ...p,
-                        frameIndex: (p.frameIndex + 1) % instances.length,
-                    }));
-                }, 1000 / prev.cineFrameRate);
-            } else if (cineIntervalRef.current) {
-                clearInterval(cineIntervalRef.current);
-                cineIntervalRef.current = null;
+                    const elapsed = performance.now() - cineStartTimeRef.current;
+                    const framesSinceStart = Math.floor(elapsed / frameDurationMs);
+                    const targetIndex = (cineStartIndexRef.current + framesSinceStart) % totalFrames;
+
+                    setViewState(p => {
+                        // Only update if target is different (skip duplicates)
+                        if (p.frameIndex === targetIndex) return p;
+                        return { ...p, frameIndex: targetIndex };
+                    });
+                }, frameDurationMs / 2); // Check at 2x rate for responsiveness
+            } else {
+                // Stop cine
+                if (cineIntervalRef.current) {
+                    clearInterval(cineIntervalRef.current);
+                    cineIntervalRef.current = null;
+                }
+                cineStartTimeRef.current = 0;
+                cineStartIndexRef.current = 0;
             }
 
             return { ...prev, isPlaying: newPlaying };
@@ -499,6 +559,9 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                     wheelAccumulator.current %= threshold;
 
                     if (steps !== 0) {
+                        // Track navigation direction
+                        lastNavDirRef.current = steps > 0 ? 1 : -1;
+
                         setViewState(prev => ({
                             ...prev,
                             frameIndex: Math.max(0, Math.min(instances.length - 1, prev.frameIndex + steps))
