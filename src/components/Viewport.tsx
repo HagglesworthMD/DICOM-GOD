@@ -41,6 +41,7 @@ const PREFETCH_AHEAD = 6;    // Frames to prefetch in nav direction
 const PREFETCH_BEHIND = 2;   // Frames to prefetch behind (for backscroll)
 const PREFETCH_MAX_INFLIGHT = 1;
 const DEBUG_PREFETCH = false;
+const MIN_CINE_FRAMES = 6;   // Minimum frames required for cine playback
 
 /** Simple LRU cache for decoded frames */
 class FrameLRUCache {
@@ -135,6 +136,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
     const instances = series.instances;
     const currentInstance = instances[viewState.frameIndex];
+    const canCine = instances.length >= MIN_CINE_FRAMES;
 
 
 
@@ -527,6 +529,9 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     }, []);
 
     const toggleCine = useCallback(() => {
+        // Guard: don't start cine on short series
+        if (!canCine) return;
+
         setViewState(prev => {
             const newPlaying = !prev.isPlaying;
 
@@ -545,10 +550,16 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
             return { ...prev, isPlaying: newPlaying };
         });
-    }, []);
+    }, [canCine]);
 
     // Cine loop effect - manages the interval based on isPlaying state
     useEffect(() => {
+        // Stop cine if series becomes ineligible (too few frames)
+        if (viewState.isPlaying && !canCine) {
+            setViewState(prev => ({ ...prev, isPlaying: false }));
+            return;
+        }
+
         // Only run interval when playing
         if (!viewState.isPlaying) {
             // Ensure cleanup when not playing
@@ -600,7 +611,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 cineIntervalRef.current = null;
             }
         };
-    }, [viewState.isPlaying, viewState.cineFrameRate, instances, runPrefetchPump]);
+    }, [viewState.isPlaying, viewState.cineFrameRate, instances, runPrefetchPump, canCine]);
 
     // Mouse handlers
     // Native wheel handler for non-passive prevention (stack scroll)
@@ -802,7 +813,12 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                     >
                         {viewState.activeTool === 'hand' ? '✋' : '📏'}
                     </button>
-                    <button onClick={toggleCine} title="Toggle cine (Space)">
+                    <button
+                        onClick={toggleCine}
+                        disabled={!canCine}
+                        title={canCine ? 'Toggle cine (Space)' : `Cine disabled — only ${instances.length} frames`}
+                        style={{ opacity: canCine ? 1 : 0.5 }}
+                    >
                         {viewState.isPlaying ? '⏸' : '▶'}
                     </button>
                     <button onClick={() => setViewState(prev => ({ ...prev, invert: !prev.invert }))} title="Invert (I)">
