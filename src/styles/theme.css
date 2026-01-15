@@ -1,0 +1,72 @@
+/**
+ * Theme CSS variables - dark mode with high contrast
+ */
+
+:root {
+    /* Colors - Dark theme with high contrast */
+    --color-background: #0a0a0c;
+    --color-surface: #141417;
+    --color-surface-elevated: #1c1c21;
+    --color-surface-hover: #252529;
+
+    --color-border: #2e2e35;
+
+    --color-text: #f0f0f2;
+    --color-text-secondary: #b8b8bf;
+    --color-text-muted: #7a7a85;
+
+    --color-primary: #3b82f6;
+    --color-primary-hover: #2563eb;
+    --color-on-primary: #ffffff;
+
+    --color-error: #ef4444;
+    --color-error-hover: #dc2626;
+    --color-warning: #f59e0b;
+    --color-success: #22c55e;
+
+    --color-focus: #60a5fa;
+
+    /* Typography */
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, 'Helvetica Neue',
+        Arial, sans-serif;
+    --font-mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', Consolas, 'Courier New', monospace;
+
+    /* Spacing */
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 10px;
+
+    /* Ensure high contrast ratios */
+    color-scheme: dark;
+}
+
+/* Ensure selection is visible */
+::selection {
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+}
+
+/* Focus visible for a11y */
+:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--color-surface);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--color-border);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--color-text-muted);
+}

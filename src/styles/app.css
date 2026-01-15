@@ -1,0 +1,109 @@
+/**
+ * App-level styles
+ */
+
+@import './theme.css';
+
+/* Reset */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html,
+body,
+#root {
+    height: 100%;
+}
+
+body {
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--color-text);
+    background: var(--color-background);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* App layout */
+.app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+.app__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+}
+
+.app__title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--color-text);
+}
+
+.app__title-icon {
+    font-size: 1.25rem;
+}
+
+.app__actions {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.app__main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+/* Error boundary fallback */
+.error-boundary-fallback {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    gap: 1rem;
+    padding: 2rem;
+    text-align: center;
+    color: var(--color-text);
+}
+
+.error-boundary-fallback h2 {
+    color: var(--color-error);
+}
+
+.error-boundary-fallback pre {
+    max-width: 100%;
+    padding: 1rem;
+    background: var(--color-surface);
+    border-radius: var(--radius-md);
+    font-size: 0.75rem;
+    overflow-x: auto;
+    text-align: left;
+}
+
+.error-boundary-fallback button {
+    padding: 0.5rem 1rem;
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+    border: none;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    font-size: 0.875rem;
+}

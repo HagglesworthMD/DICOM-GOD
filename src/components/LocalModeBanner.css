@@ -1,0 +1,23 @@
+.local-mode-banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 0.5rem 1rem;
+    background: var(--color-warning);
+    color: var(--color-background);
+    font-size: 0.8125rem;
+}
+
+.local-mode-banner__text {
+    text-align: center;
+}
+
+.local-mode-banner .btn {
+    color: var(--color-background);
+    border-color: rgba(0, 0, 0, 0.2);
+}
+
+.local-mode-banner .btn:hover {
+    background: rgba(0, 0, 0, 0.1);
+}

@@ -1,0 +1,18 @@
+.folder-picker-btn {
+    flex-shrink: 0;
+}
+
+.modal-note {
+    padding: 0.75rem;
+    background: var(--color-surface);
+    border-radius: var(--radius-sm);
+    font-size: 0.8125rem;
+    color: var(--color-text-muted);
+    margin-top: 1rem;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+}
