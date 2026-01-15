@@ -275,6 +275,7 @@ function addInstance(series: Series, parsed: ParsedDicom, file: FileEntry) {
         imageOrientationPatient: parsed.imageOrientationPatient,
         imagePositionPatient: parsed.imagePositionPatient,
         pixelSpacing: parsed.pixelSpacing,
+        imagerPixelSpacing: parsed.imagerPixelSpacing,
         rows: parsed.rows,
         columns: parsed.columns,
         bitsAllocated: parsed.bitsAllocated,
@@ -401,12 +402,32 @@ function sortStudyContents(study: Study) {
                     }
                 }
 
+                // Determine spacing source for this series
+                let spacingSource: 'PixelSpacing' | 'ImagerPixelSpacing' | 'Unknown' = 'Unknown';
+                for (const inst of series.instances) {
+                    if (inst.pixelSpacing) {
+                        spacingSource = 'PixelSpacing';
+                        break;
+                    } else if (inst.imagerPixelSpacing && spacingSource === 'Unknown') {
+                        spacingSource = 'ImagerPixelSpacing';
+                    }
+                }
+
+                const reasons = isRegular
+                    ? ['Regular slice spacing verified', 'Sorted by spatial position']
+                    : ['Sorted by spatial position', 'Irregular slice spacing detected'];
+
+                if (spacingSource === 'ImagerPixelSpacing') {
+                    reasons.push('Using ImagerPixelSpacing (less accurate)');
+                } else if (spacingSource === 'Unknown') {
+                    reasons.push('No pixel spacing information');
+                }
+
                 series.geometryTrust = isRegular ? 'verified' : 'trusted';
                 series.geometryTrustInfo = {
                     level: series.geometryTrust,
-                    reasons: isRegular
-                        ? ['Regular slice spacing verified', 'Sorted by spatial position']
-                        : ['Sorted by spatial position', 'Irregular slice spacing detected']
+                    reasons,
+                    spacingSource
                 };
 
                 continue; // Done with this series
@@ -415,6 +436,24 @@ function sortStudyContents(study: Study) {
 
         // Fallback: Instance Number
         series.geometryTrust = 'untrusted';
+
+        // Determine spacing source even for fallback
+        let spacingSource: 'PixelSpacing' | 'ImagerPixelSpacing' | 'Unknown' = 'Unknown';
+        for (const inst of series.instances) {
+            if (inst.pixelSpacing) {
+                spacingSource = 'PixelSpacing';
+                break;
+            } else if (inst.imagerPixelSpacing && spacingSource === 'Unknown') {
+                spacingSource = 'ImagerPixelSpacing';
+            }
+        }
+
+        series.geometryTrustInfo = {
+            level: 'untrusted',
+            reasons: ['Missing or inconsistent geometry', 'Sorted by instance number'],
+            spacingSource
+        };
+
         series.instances.sort((a, b) => {
             // InstanceNumber comparison (null sorts last)
             if (a.instanceNumber !== null && b.instanceNumber !== null) {

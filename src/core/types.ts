@@ -43,6 +43,7 @@ export type GeometryTrust = 'unknown' | 'untrusted' | 'trusted' | 'verified';
 export interface GeometryTrustInfo {
     level: GeometryTrust;
     reasons: string[];
+    spacingSource: 'PixelSpacing' | 'ImagerPixelSpacing' | 'Unknown';
 }
 
 /** DICOM Study - top level grouping */
@@ -86,6 +87,7 @@ export interface Instance {
     imageOrientationPatient?: string;
     imagePositionPatient?: string;
     pixelSpacing?: string;
+    imagerPixelSpacing?: string;
     rows?: number;
     columns?: number;
 

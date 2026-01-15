@@ -39,6 +39,7 @@ const TAGS = {
     ImageOrientationPatient: 0x00200037,
     ImagePositionPatient: 0x00200032,
     PixelSpacing: 0x00280030,
+    ImagerPixelSpacing: 0x00181164,
     Rows: 0x00280010,
     Columns: 0x00280011,
     SamplesPerPixel: 0x00280002,
@@ -93,6 +94,7 @@ export interface ParsedDicom {
     imageOrientationPatient?: string;
     imagePositionPatient?: string;
     pixelSpacing?: string;
+    imagerPixelSpacing?: string;
     rows?: number;
     columns?: number;
     bitsAllocated?: number;
@@ -293,6 +295,9 @@ export async function parseDicomHeader(file: File): Promise<ParsedDicom> {
                     break;
                 case TAGS.PixelSpacing:
                     result.pixelSpacing = value as string;
+                    break;
+                case TAGS.ImagerPixelSpacing:
+                    result.imagerPixelSpacing = value as string;
                     break;
                 case TAGS.Rows:
                     result.rows = parseIntValue(value);
