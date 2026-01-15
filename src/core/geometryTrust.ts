@@ -32,19 +32,30 @@ export function verifySeriesGeometry(series: Series): GeometryTrustInfo {
     const reasons: string[] = [];
     const instances = series.instances;
 
+    // Determine spacing source
+    let spacingSource: 'PixelSpacing' | 'ImagerPixelSpacing' | 'Unknown' = 'Unknown';
+    for (const inst of instances) {
+        if (inst.pixelSpacing) {
+            spacingSource = 'PixelSpacing';
+            break;
+        } else if (inst.imagerPixelSpacing && spacingSource === 'Unknown') {
+            spacingSource = 'ImagerPixelSpacing';
+        }
+    }
+
     if (instances.length === 0) {
-        return { level: 'unknown', reasons: ['No instances'] };
+        return { level: 'unknown', reasons: ['No instances'], spacingSource };
     }
 
     if (instances.length === 1) {
         const inst = instances[0];
         if (inst.imageOrientationPatient && inst.imagePositionPatient && inst.pixelSpacing) {
-            return { level: 'verified', reasons: ['Single image with complete geometry'] };
+            return { level: 'verified', reasons: ['Single image with complete geometry'], spacingSource };
         }
         if (inst.imageOrientationPatient || inst.imagePositionPatient) {
-            return { level: 'trusted', reasons: ['Single image with partial geometry'] };
+            return { level: 'trusted', reasons: ['Single image with partial geometry'], spacingSource };
         }
-        return { level: 'unknown', reasons: ['No geometry tags'] };
+        return { level: 'unknown', reasons: ['No geometry tags'], spacingSource };
     }
 
     // Multiple instances - check consistency
@@ -135,35 +146,42 @@ export function verifySeriesGeometry(series: Series): GeometryTrustInfo {
         }
     }
 
+    // Add note if using ImagerPixelSpacing fallback
+    if (spacingSource === 'ImagerPixelSpacing') {
+        reasons.push('Using ImagerPixelSpacing (less accurate)');
+    } else if (spacingSource === 'Unknown') {
+        reasons.push('No pixel spacing information');
+    }
+
     // Determine trust level
     if (!hasIOP && !hasIPP) {
-        return { level: 'unknown', reasons: ['No geometry information'] };
+        return { level: 'unknown', reasons: ['No geometry information'], spacingSource };
     }
 
     if (!iopConsistent) {
-        return { level: 'untrusted', reasons };
+        return { level: 'untrusted', reasons, spacingSource };
     }
 
     if (!spacingConsistent) {
         reasons.push('Using assumed spacing values');
-        return { level: 'trusted', reasons };
+        return { level: 'trusted', reasons, spacingSource };
     }
 
     if (!positionsValid) {
-        return { level: 'untrusted', reasons };
+        return { level: 'untrusted', reasons, spacingSource };
     }
 
     if (hasIOP && hasIPP && hasSpacing && iopConsistent && spacingConsistent && positionsValid) {
         if (reasons.length === 0) {
-            return { level: 'verified', reasons: ['Geometry verified'] };
+            return { level: 'verified', reasons: ['Geometry verified'], spacingSource };
         }
     }
 
     if (hasIOP && hasSpacing) {
-        return { level: 'trusted', reasons: reasons.length > 0 ? reasons : ['Partial geometry'] };
+        return { level: 'trusted', reasons: reasons.length > 0 ? reasons : ['Partial geometry'], spacingSource };
     }
 
-    return { level: 'trusted', reasons: ['Limited geometry data'] };
+    return { level: 'trusted', reasons: ['Limited geometry data'], spacingSource };
 }
 
 /**
