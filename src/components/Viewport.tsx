@@ -440,6 +440,15 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             const newPlaying = !prev.isPlaying;
 
             if (newPlaying) {
+                // Kickstart prefetch for smoother cine start
+                const queue: Instance[] = [];
+                for (let i = 1; i <= PREFETCH_AHEAD; i++) {
+                    const idx = (prev.frameIndex + i) % instances.length;
+                    if (instances[idx]) queue.push(instances[idx]);
+                }
+                prefetchQueueRef.current = queue;
+                runPrefetchPump();
+
                 cineIntervalRef.current = window.setInterval(() => {
                     setViewState(p => ({
                         ...p,
@@ -453,7 +462,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
             return { ...prev, isPlaying: newPlaying };
         });
-    }, [instances.length]);
+    }, [instances, runPrefetchPump]);
 
     // Cleanup cine on unmount
     useEffect(() => {
