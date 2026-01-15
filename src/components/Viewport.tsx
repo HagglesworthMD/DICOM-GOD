@@ -12,7 +12,9 @@ import {
     DecodeError
 } from '../core/decodeBridge';
 import { renderFrame, renderLoading, renderError, drawOverlay } from '../core/canvas2dRenderer';
-import { getTrustBadge, getTrustDescription, verifySeriesGeometry } from '../core/geometryTrust';
+// geometryTrust helpers available if needed
+import { verifySeriesGeometry as _verifySeriesGeometry } from '../core/geometryTrust';
+void _verifySeriesGeometry; // Suppress unused warning - may be used later
 import { isTransferSyntaxSupported } from '../core/types';
 import type { Series, Instance, DecodedFrame, ViewportState, FileRegistry } from '../core/types';
 import './Viewport.css';
@@ -28,6 +30,61 @@ const DEFAULT_STATE: ViewportState = {
     isPlaying: false,
     cineFrameRate: 15,
 };
+
+// ============================================================================
+// LRU Frame Cache
+// ============================================================================
+const CACHE_MAX_SIZE = 32;
+const PREFETCH_AHEAD = 4;
+const PREFETCH_MAX_INFLIGHT = 1;
+const DEBUG_PREFETCH = false;
+
+/** Simple LRU cache for decoded frames */
+class FrameLRUCache {
+    private cache = new Map<string, DecodedFrame>();
+    private maxSize: number;
+
+    constructor(maxSize: number) {
+        this.maxSize = maxSize;
+    }
+
+    /** Get frame, refreshing LRU order */
+    get(key: string): DecodedFrame | undefined {
+        const frame = this.cache.get(key);
+        if (frame) {
+            // Refresh: delete and re-add to make it newest
+            this.cache.delete(key);
+            this.cache.set(key, frame);
+        }
+        return frame;
+    }
+
+    /** Set frame, evicting oldest if at capacity */
+    set(key: string, frame: DecodedFrame): void {
+        if (this.cache.has(key)) {
+            this.cache.delete(key);
+        } else if (this.cache.size >= this.maxSize) {
+            // Evict oldest (first key)
+            const oldest = this.cache.keys().next().value;
+            if (oldest !== undefined) {
+                this.cache.delete(oldest);
+            }
+        }
+        this.cache.set(key, frame);
+    }
+
+    has(key: string): boolean {
+        return this.cache.has(key);
+    }
+
+    clear(): void {
+        this.cache.clear();
+    }
+
+    get size(): number {
+        return this.cache.size;
+    }
+}
 
 interface DicomViewerProps {
     series: Series;
@@ -48,6 +105,14 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | null }>({ startX: 0, startY: 0, mode: null });
     const wheelAccumulator = useRef(0);
     const activeRequestId = useRef(0);
+
+    // LRU cache for decoded frames (per-component instance = per-series due to key remount)
+    const frameCacheRef = useRef(new FrameLRUCache(CACHE_MAX_SIZE));
+
+    // Prefetch state
+    const prefetchQueueRef = useRef<Instance[]>([]);
+    const prefetchInflightRef = useRef(0);
+    const prefetchGenerationRef = useRef(0); // Invalidation token
 
 
 
@@ -120,7 +185,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         };
     }, [instances, fileRegistry]);
 
-    // Load frame when index changes
+    // Load frame when index changes (cache-first)
     useEffect(() => {
         if (!currentInstance) return;
 
@@ -140,6 +205,29 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             return;
         }
 
+        const cacheKey = `${currentInstance.fileKey}:0`;
+        const cache = frameCacheRef.current;
+
+        // Cache hit - instant display
+        const cachedFrame = cache.get(cacheKey);
+        if (cachedFrame) {
+            if (DEBUG_PREFETCH) console.log('[PREFETCH] Cache HIT:', cacheKey);
+            setCurrentFrame(cachedFrame);
+            if (viewState.frameIndex === 0 || !currentFrame) {
+                setViewState(prev => ({
+                    ...prev,
+                    windowCenter: cachedFrame.windowCenter,
+                    windowWidth: cachedFrame.windowWidth,
+                }));
+            }
+            setLoading(false);
+            setError(null);
+            return;
+        }
+
+        // Cache miss - decode
+        if (DEBUG_PREFETCH) console.log('[PREFETCH] Cache MISS:', cacheKey);
+
         // Increment ID for this new frame load attempt - Latest Wins
         const requestId = ++activeRequestId.current;
 
@@ -151,6 +239,9 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             .then(frame => {
                 // Ignore if stale
                 if (requestId !== activeRequestId.current) return;
+
+                // Store in cache
+                cache.set(cacheKey, frame);
 
                 setCurrentFrame(frame);
                 // Set initial window from frame defaults
@@ -176,6 +267,65 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 setLoading(false);
             });
     }, [currentInstance, viewState.frameIndex]);
+
+    // Prefetch pump - runs after frame changes
+    const runPrefetchPump = useCallback(() => {
+        const queue = prefetchQueueRef.current;
+        const cache = frameCacheRef.current;
+        const generation = prefetchGenerationRef.current;
+
+        // Pump while we have capacity and items in queue
+        while (prefetchInflightRef.current < PREFETCH_MAX_INFLIGHT && queue.length > 0) {
+            const instance = queue.shift()!;
+            const cacheKey = `${instance.fileKey}:0`;
+
+            // Skip if already cached or unsupported
+            if (cache.has(cacheKey)) continue;
+            if (!isTransferSyntaxSupported(instance.transferSyntaxUid)) continue;
+            if (instance.numberOfFrames && instance.numberOfFrames > 1) continue;
+
+            prefetchInflightRef.current++;
+            if (DEBUG_PREFETCH) console.log('[PREFETCH] Fetching:', cacheKey, 'inflight:', prefetchInflightRef.current);
+
+            decodeFrame(instance, 0)
+                .then(frame => {
+                    // Check generation - ignore if series changed
+                    if (prefetchGenerationRef.current !== generation) {
+                        if (DEBUG_PREFETCH) console.log('[PREFETCH] Stale generation, discarding:', cacheKey);
+                        return;
+                    }
+                    cache.set(cacheKey, frame);
+                    if (DEBUG_PREFETCH) console.log('[PREFETCH] Cached:', cacheKey, 'size:', cache.size);
+                })
+                .catch(() => {
+                    // Silently ignore prefetch errors
+                })
+                .finally(() => {
+                    prefetchInflightRef.current--;
+                    // Pump again
+                    if (prefetchGenerationRef.current === generation) {
+                        runPrefetchPump();
+                    }
+                });
+        }
+    }, []);
+
+    // Schedule prefetch after frame index changes
+    useEffect(() => {
+        const startIdx = viewState.frameIndex;
+        const queue: Instance[] = [];
+
+        // Queue next K frames (wrapping for cine)
+        for (let i = 1; i <= PREFETCH_AHEAD; i++) {
+            const idx = (startIdx + i) % instances.length;
+            if (instances[idx]) {
+                queue.push(instances[idx]);
+            }
+        }
+
+        prefetchQueueRef.current = queue;
+        runPrefetchPump();
+    }, [viewState.frameIndex, instances, runPrefetchPump]);
 
     // Render to canvas
     useEffect(() => {
@@ -400,8 +550,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         e.preventDefault();
     }, []);
 
-    // Geometry trust
-    const trustInfo = verifySeriesGeometry(series);
+    // Geometry trust computed from series.geometryTrust
 
     return (
         <div className="dicom-viewer">
