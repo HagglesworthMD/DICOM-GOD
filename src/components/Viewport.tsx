@@ -537,58 +537,70 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 // Time-based cine: record start time and index
                 cineStartTimeRef.current = performance.now();
                 cineStartIndexRef.current = prev.frameIndex;
-                const frameDurationMs = 1000 / prev.cineFrameRate;
-                const totalFrames = instances.length;
-
-                // Kickstart prefetch for smoother cine start
-                const queue: Instance[] = [];
-                const queuedSet = prefetchQueuedSetRef.current;
-                queuedSet.clear();
-                for (let i = 1; i <= PREFETCH_AHEAD; i++) {
-                    const idx = (prev.frameIndex + i) % totalFrames;
-                    const inst = instances[idx];
-                    if (inst && !queuedSet.has(inst.fileKey)) {
-                        queue.push(inst);
-                        queuedSet.add(inst.fileKey);
-                    }
-                }
-                prefetchQueueRef.current = queue;
-                runPrefetchPump();
-
-                // Time-based cine interval (catch-up skip)
-                cineIntervalRef.current = window.setInterval(() => {
-                    const elapsed = performance.now() - cineStartTimeRef.current;
-                    const framesSinceStart = Math.floor(elapsed / frameDurationMs);
-                    const targetIndex = (cineStartIndexRef.current + framesSinceStart) % totalFrames;
-
-                    setViewState(p => {
-                        // Only update if target is different (skip duplicates)
-                        if (p.frameIndex === targetIndex) return p;
-                        return { ...p, frameIndex: targetIndex };
-                    });
-                }, frameDurationMs / 2); // Check at 2x rate for responsiveness
             } else {
-                // Stop cine
-                if (cineIntervalRef.current) {
-                    clearInterval(cineIntervalRef.current);
-                    cineIntervalRef.current = null;
-                }
+                // Stop cine - clear timing refs
                 cineStartTimeRef.current = 0;
                 cineStartIndexRef.current = 0;
             }
 
             return { ...prev, isPlaying: newPlaying };
         });
-    }, [instances, runPrefetchPump]);
+    }, []);
 
-    // Cleanup cine on unmount
+    // Cine loop effect - manages the interval based on isPlaying state
     useEffect(() => {
+        // Only run interval when playing
+        if (!viewState.isPlaying) {
+            // Ensure cleanup when not playing
+            if (cineIntervalRef.current) {
+                clearInterval(cineIntervalRef.current);
+                cineIntervalRef.current = null;
+            }
+            return;
+        }
+
+        const frameDurationMs = 1000 / viewState.cineFrameRate;
+        const totalFrames = instances.length;
+
+        // Kickstart prefetch for smoother cine start
+        const queue: Instance[] = [];
+        const queuedSet = prefetchQueuedSetRef.current;
+        queuedSet.clear();
+        for (let i = 1; i <= PREFETCH_AHEAD; i++) {
+            const idx = (viewState.frameIndex + i) % totalFrames;
+            const inst = instances[idx];
+            if (inst && !queuedSet.has(inst.fileKey)) {
+                queue.push(inst);
+                queuedSet.add(inst.fileKey);
+            }
+        }
+        prefetchQueueRef.current = queue;
+        runPrefetchPump();
+
+        // Time-based cine interval (catch-up skip)
+        cineIntervalRef.current = window.setInterval(() => {
+            setViewState(p => {
+                // CRITICAL: Hard guard - do NOT advance if not playing
+                if (!p.isPlaying) return p;
+
+                const elapsed = performance.now() - cineStartTimeRef.current;
+                const framesSinceStart = Math.floor(elapsed / frameDurationMs);
+                const targetIndex = (cineStartIndexRef.current + framesSinceStart) % totalFrames;
+
+                // Only update if target is different (skip duplicates)
+                if (p.frameIndex === targetIndex) return p;
+                return { ...p, frameIndex: targetIndex };
+            });
+        }, frameDurationMs / 2); // Check at 2x rate for responsiveness
+
+        // Cleanup on effect teardown (when isPlaying becomes false or component unmounts)
         return () => {
             if (cineIntervalRef.current) {
                 clearInterval(cineIntervalRef.current);
+                cineIntervalRef.current = null;
             }
         };
-    }, []);
+    }, [viewState.isPlaying, viewState.cineFrameRate, instances, runPrefetchPump]);
 
     // Mouse handlers
     // Native wheel handler for non-passive prevention (stack scroll)
