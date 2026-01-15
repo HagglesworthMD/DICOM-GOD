@@ -10,6 +10,9 @@ import './DropZone.css';
 
 const log = createLogger('DropZone');
 
+// Extensions to skip (obvious non-DICOM images)
+const SKIP_EXTENSIONS = /\.(jpe?g|png|gif|bmp|webp|tiff?|heic|svg|ico|pdf|txt|json|xml|html?|css|js|ts|md|log)$/i;
+
 interface DropZoneProps {
     onFiles: (files: FileEntry[]) => void;
     disabled?: boolean;
@@ -87,6 +90,8 @@ export function DropZone({ onFiles, disabled, children, className = '' }: DropZo
 
                     const file = item.getAsFile();
                     if (file) {
+                        // Skip obvious non-DICOM files by extension
+                        if (SKIP_EXTENSIONS.test(file.name)) return;
                         files.push({
                             name: file.name,
                             size: file.size,
@@ -110,6 +115,8 @@ export function DropZone({ onFiles, disabled, children, className = '' }: DropZo
 
                         const entryPath = path ? `${path}/${entry.name}` : entry.name;
                         if (entry.kind === 'file') {
+                            // Skip obvious non-DICOM files by extension
+                            if (SKIP_EXTENSIONS.test(entry.name)) continue;
                             const fileHandle = entry as FileSystemFileHandle;
                             const file = await fileHandle.getFile();
                             results.push({

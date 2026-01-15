@@ -29,6 +29,9 @@ interface FolderPickerProps {
 // Check if File System Access API is available
 const isFileSystemAccessSupported = 'showDirectoryPicker' in window;
 
+// Extensions to skip (obvious non-DICOM images)
+const SKIP_EXTENSIONS = /\.(jpe?g|png|gif|bmp|webp|tiff?|heic|svg|ico|pdf|txt|json|xml|html?|css|js|ts|md|log)$/i;
+
 export function FolderPicker({ onFilesSelected, disabled }: FolderPickerProps) {
     const [showUnsupportedModal, setShowUnsupportedModal] = useState(false);
     const [showPermissionModal, setShowPermissionModal] = useState(false);
@@ -81,6 +84,8 @@ export function FolderPicker({ onFilesSelected, disabled }: FolderPickerProps) {
                 for await (const entry of dirHandle.values()) {
                     const entryPath = path ? `${path}/${entry.name}` : entry.name;
                     if (entry.kind === 'file') {
+                        // Skip obvious non-DICOM files by extension
+                        if (SKIP_EXTENSIONS.test(entry.name)) continue;
                         const fileHandle = entry as FileSystemFileHandle;
                         const file = await fileHandle.getFile();
                         files.push({

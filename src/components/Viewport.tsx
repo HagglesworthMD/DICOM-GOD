@@ -240,7 +240,11 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         // Increment ID for this new frame load attempt - Latest Wins
         const requestId = ++activeRequestId.current;
 
-        setLoading(true);
+        // Only show loading if NOT playing cine (avoid flicker)
+        // Keep last frame visible during decode
+        if (!viewState.isPlaying) {
+            setLoading(true);
+        }
         setError(null);
         setIsUnsupported(false);
 
@@ -374,7 +378,9 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             canvas.height = rect.height;
         }
 
-        if (loading) {
+        // During cine, suppress loading overlay to prevent flicker
+        // Keep showing last good frame instead
+        if (loading && !viewState.isPlaying) {
             renderLoading(canvas, 'Loading...');
             return;
         }
