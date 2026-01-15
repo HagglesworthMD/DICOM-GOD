@@ -123,6 +123,9 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const cineStartTimeRef = useRef(0);
     const cineStartIndexRef = useRef(0);
 
+    // Track if we've successfully rendered at least one frame (for safe cine overlay suppression)
+    const hasRenderedFrameRef = useRef(false);
+
 
 
     const instances = series.instances;
@@ -378,9 +381,10 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             canvas.height = rect.height;
         }
 
-        // During cine, suppress loading overlay to prevent flicker
-        // Keep showing last good frame instead
-        if (loading && !viewState.isPlaying) {
+        // During cine, suppress loading overlay ONLY if we've already rendered at least one frame
+        // This prevents flicker while keeping honest "Loading..." for initial load
+        const canSuppressLoading = viewState.isPlaying && hasRenderedFrameRef.current;
+        if (loading && !canSuppressLoading) {
             renderLoading(canvas, 'Loading...');
             return;
         }
@@ -392,6 +396,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
         if (currentFrame) {
             renderFrame(canvas, currentFrame, viewState);
+            hasRenderedFrameRef.current = true; // Mark that we've successfully rendered
             drawOverlay(canvas, {
                 frameIndex: viewState.frameIndex,
                 totalFrames: instances.length,
