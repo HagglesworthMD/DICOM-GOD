@@ -236,6 +236,10 @@ function getOrCreateSeries(study: Study, parsed: ParsedDicom): Series {
             modality: parsed.modality || 'OT',
             instances: [],
             geometryTrust: 'unknown',
+            // Classification defaults (will be recomputed in sortStudyContents)
+            kind: 'single',
+            cineEligible: false,
+            cineReason: 'Not yet classified',
         };
         study.series.push(series);
     }
@@ -473,6 +477,36 @@ function sortStudyContents(study: Study) {
             // SOPInstanceUID as final
             return a.sopInstanceUid.localeCompare(b.sopInstanceUid);
         });
+    }
+
+    // Classify each series (kind, cineEligible)
+    const MIN_STACK_IMAGES = 5;
+
+    for (const series of study.series) {
+        const instanceCount = series.instances.length;
+
+        // Check for multiframe
+        const hasMultiframe = series.instances.some(i => (i.numberOfFrames ?? 1) > 1);
+        series.hasMultiframe = hasMultiframe;
+
+        // Determine kind and cine eligibility
+        if (hasMultiframe) {
+            series.kind = 'multiframe';
+            series.cineEligible = true;
+            series.cineReason = undefined;
+        } else if (series.geometryTrust === 'untrusted') {
+            series.kind = 'unsafe';
+            series.cineEligible = false;
+            series.cineReason = 'Geometry unsafe';
+        } else if (instanceCount >= MIN_STACK_IMAGES) {
+            series.kind = 'stack';
+            series.cineEligible = true;
+            series.cineReason = undefined;
+        } else {
+            series.kind = 'single';
+            series.cineEligible = false;
+            series.cineReason = `Only ${instanceCount} image${instanceCount === 1 ? '' : 's'}`;
+        }
     }
 }
 

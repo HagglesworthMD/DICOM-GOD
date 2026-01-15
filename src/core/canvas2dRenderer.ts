@@ -176,6 +176,7 @@ export function drawOverlay(
             fps: number;
             canCine: boolean;
             isBuffering?: boolean;
+            cineReason?: string;
         };
     }
 ): void {

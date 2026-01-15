@@ -27,6 +27,8 @@ function createSeries(overrides: Partial<Series>): Series {
         modality: 'CT',
         instances: [],
         geometryTrust: 'unknown',
+        kind: 'single',
+        cineEligible: false,
         ...overrides,
     };
 }

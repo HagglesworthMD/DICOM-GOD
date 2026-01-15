@@ -43,7 +43,6 @@ const PREFETCH_MANUAL_AHEAD = 4;  // Frames to prefetch ahead during manual nav
 const PREFETCH_MANUAL_BEHIND = 2; // Frames to prefetch behind during manual nav
 const PREFETCH_MAX_INFLIGHT = 1;
 const DEBUG_PREFETCH = false;
-const MIN_CINE_FRAMES = 6;        // Minimum frames required for cine playback
 
 /** Simple LRU cache for decoded frames */
 class FrameLRUCache {
@@ -139,9 +138,12 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
 
 
+
     const instances = series.instances;
     const currentInstance = instances[viewState.frameIndex];
-    const canCine = instances.length >= MIN_CINE_FRAMES;
+    // Use series classification from metadata worker
+    const canCine = series.cineEligible;
+    const cineReason = series.cineReason;
 
 
 
@@ -479,10 +481,11 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 isPlaying: viewState.isPlaying,
                 fps: viewState.cineFrameRate,
                 canCine,
-                isBuffering
+                isBuffering,
+                cineReason
             }
         });
-    }, [currentFrame, viewState, loading, error, isUnsupported, instances.length, currentInstance, series.geometryTrustInfo, canCine]);
+    }, [currentFrame, viewState, loading, error, isUnsupported, instances.length, currentInstance, series.geometryTrustInfo, canCine, cineReason]);
 
     // Resize handler
     useEffect(() => {
@@ -851,7 +854,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                     <button
                         onClick={toggleCine}
                         disabled={!canCine}
-                        title={canCine ? 'Toggle cine (Space)' : `Cine disabled — only ${instances.length} frames`}
+                        title={canCine ? 'Toggle cine (Space)' : `Cine disabled: ${cineReason || 'Not eligible'}`}
                         style={{ opacity: canCine ? 1 : 0.5 }}
                     >
                         {viewState.isPlaying ? '⏸' : '▶'}

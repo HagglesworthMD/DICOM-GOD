@@ -91,15 +91,43 @@ function getTrustTooltip(series: Series): string {
     return lines.join('\n');
 }
 
+/** Get badge label for series kind */
+function getKindBadge(kind: Series['kind']): { text: string; color: string } {
+    switch (kind) {
+        case 'stack': return { text: 'STACK', color: '#4a9' };
+        case 'multiframe': return { text: 'CINE', color: '#49f' };
+        case 'unsafe': return { text: 'UNSAFE', color: '#f44' };
+        case 'single':
+        default: return { text: 'SINGLE', color: '#666' };
+    }
+}
+
 function SeriesItem({ series, isSelected, onSelect }: SeriesItemProps) {
-    const badge = getTrustBadge(series.geometryTrust);
-    const tooltip = getTrustTooltip(series);
+    const trustBadge = getTrustBadge(series.geometryTrust);
+    const trustTooltip = getTrustTooltip(series);
+    const kindBadge = getKindBadge(series.kind);
+
+    // Build kind tooltip
+    let kindTooltip = `Type: ${series.kind}`;
+    if (series.cineEligible) {
+        kindTooltip += '\nCine: enabled';
+    } else {
+        kindTooltip += `\nCine: disabled${series.cineReason ? ` (${series.cineReason})` : ''}`;
+    }
+    if (series.hasMultiframe) {
+        kindTooltip += '\nMulti-frame DICOM';
+    }
+
+    // De-emphasize single-image series
+    const isSingle = series.kind === 'single';
+    const opacity = isSingle ? 0.6 : 1;
 
     return (
         <li className="series-item">
             <button
                 className={`series-item__btn ${isSelected ? 'series-item__btn--selected' : ''}`}
                 onClick={onSelect}
+                style={{ opacity }}
             >
                 <span className="series-item__modality">{series.modality}</span>
                 <div className="series-item__info">
@@ -112,11 +140,27 @@ function SeriesItem({ series, isSelected, onSelect }: SeriesItemProps) {
                     </span>
                 </div>
                 <span
-                    className="series-item__trust"
-                    title={tooltip}
-                    style={{ fontSize: '0.9em', cursor: 'help', marginLeft: 'auto', paddingLeft: '8px' }}
+                    className="series-item__kind"
+                    title={kindTooltip}
+                    style={{
+                        fontSize: '0.65em',
+                        fontWeight: 'bold',
+                        color: kindBadge.color,
+                        background: 'rgba(0,0,0,0.3)',
+                        padding: '2px 4px',
+                        borderRadius: '3px',
+                        marginLeft: '4px',
+                        cursor: 'help'
+                    }}
                 >
-                    {badge}
+                    {kindBadge.text}
+                </span>
+                <span
+                    className="series-item__trust"
+                    title={trustTooltip}
+                    style={{ fontSize: '0.9em', cursor: 'help', marginLeft: '4px', paddingLeft: '4px' }}
+                >
+                    {trustBadge}
                 </span>
             </button>
         </li>

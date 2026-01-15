@@ -58,6 +58,9 @@ export interface Study {
     series: Series[];
 }
 
+/** Series classification for UI and behavior gating */
+export type SeriesKind = 'stack' | 'single' | 'multiframe' | 'unsafe';
+
 /** DICOM Series - group of related instances */
 export interface Series {
     seriesInstanceUid: string;
@@ -68,6 +71,15 @@ export interface Series {
     instances: Instance[];
     geometryTrust: GeometryTrust;
     geometryTrustInfo?: GeometryTrustInfo;
+
+    /** Series classification for UI display and behavior */
+    kind: SeriesKind;
+    /** Whether cine playback is allowed for this series */
+    cineEligible: boolean;
+    /** Reason cine is disabled (if !cineEligible) */
+    cineReason?: string;
+    /** True if any instance has NumberOfFrames > 1 */
+    hasMultiframe?: boolean;
 }
 
 /** DICOM Instance - single image/object */
