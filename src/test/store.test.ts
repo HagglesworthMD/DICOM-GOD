@@ -75,3 +75,74 @@ describe('Store Reducer - Preferences', () => {
         );
     });
 });
+
+describe('Store Reducer - Layout State', () => {
+    let initialState: AppState;
+
+    beforeEach(() => {
+        initialState = {
+            preferences: { pauseCineOnMeasure: false, seriesPrefs: {} },
+            files: [],
+            localModeEnabled: false,
+            localModeWarnings: [],
+            errors: [],
+            shortcutsHelpVisible: false,
+            statusMessage: '',
+            studies: [],
+            indexProgress: null,
+            selectedSeries: null,
+            hasStoredFolder: false,
+            storedFolderName: null,
+            fileRegistry: new Map(),
+            layoutState: {
+                layout: 2,
+                slots: [
+                    { id: 0, series: null, isActive: true },
+                    { id: 1, series: null, isActive: false },
+                    { id: 2, series: null, isActive: false },
+                    { id: 3, series: null, isActive: false },
+                ],
+                activeSlotId: 0,
+                hangingApplied: false,
+                undoState: null,
+            },
+        };
+    });
+
+    it('SET_ACTIVE_SLOT changes activeSlotId', () => {
+        const action = { type: 'SET_ACTIVE_SLOT', slotId: 1 } as const;
+        const newState = reducer(initialState, action);
+
+        expect(newState.layoutState.activeSlotId).toBe(1);
+        expect(newState.layoutState.slots[0].isActive).toBe(false);
+        expect(newState.layoutState.slots[1].isActive).toBe(true);
+    });
+
+    it('SET_LAYOUT changes layout and preserves visible slots', () => {
+        const action = { type: 'SET_LAYOUT', layout: 4 } as const;
+        const newState = reducer(initialState, action);
+
+        expect(newState.layoutState.layout).toBe(4);
+    });
+
+    it('SET_LAYOUT clears series in now-hidden slots', () => {
+        // Start with 4-up layout and series in all slots
+        initialState.layoutState.layout = 4;
+        initialState.layoutState.slots = [
+            { id: 0, series: { seriesInstanceUid: 'a' } as any, isActive: true },
+            { id: 1, series: { seriesInstanceUid: 'b' } as any, isActive: false },
+            { id: 2, series: { seriesInstanceUid: 'c' } as any, isActive: false },
+            { id: 3, series: { seriesInstanceUid: 'd' } as any, isActive: false },
+        ];
+
+        // Switch to 2-up
+        const action = { type: 'SET_LAYOUT', layout: 2 } as const;
+        const newState = reducer(initialState, action);
+
+        // Slots 0, 1 should keep series; slots 2, 3 should be cleared
+        expect(newState.layoutState.slots[0].series?.seriesInstanceUid).toBe('a');
+        expect(newState.layoutState.slots[1].series?.seriesInstanceUid).toBe('b');
+        expect(newState.layoutState.slots[2].series).toBeNull();
+        expect(newState.layoutState.slots[3].series).toBeNull();
+    });
+});

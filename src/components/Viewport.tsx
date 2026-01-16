@@ -2,7 +2,7 @@
  * DICOM Viewport - Real image viewer with interactions
  */
 
-import { useRef, useEffect, useState, useCallback } from 'react';
+import { useRef, useEffect, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { getFlag } from '../core/featureFlags';
 import { useAppState, useAppDispatch } from '../state/store';
 import {
@@ -18,9 +18,15 @@ void _verifySeriesGeometry; // Suppress unused warning - may be used later
 import { isTransferSyntaxSupported } from '../core/types';
 import type { Series, Instance, DecodedFrame, ViewportState, FileRegistry } from '../core/types';
 import './Viewport.css';
-import { mapKeyToAction } from '../core/shortcuts';
+import type { ShortcutAction } from '../core/shortcuts';
 import { calculateNextFrame, getPreset } from '../core/viewOps';
 import { resolveFrameAuthority } from '../core/frameAuthority';
+
+/** Imperative handle exposed by DicomViewer for external action routing */
+export interface DicomViewerHandle {
+    /** Apply a shortcut action to this viewer */
+    applyAction(action: ShortcutAction): void;
+}
 
 
 
@@ -101,626 +107,623 @@ interface DicomViewerProps {
     fileRegistry: FileRegistry;
 }
 
-export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
-    const { preferences } = useAppState();
-    const dispatch = useAppDispatch();
-    const canvasRef = useRef<HTMLCanvasElement>(null);
-    const containerRef = useRef<HTMLDivElement>(null);
+export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
+    function DicomViewer({ series, fileRegistry }, ref) {
+        const { preferences } = useAppState();
+        const dispatch = useAppDispatch();
+        const canvasRef = useRef<HTMLCanvasElement>(null);
+        const containerRef = useRef<HTMLDivElement>(null);
 
-    // Per-series preferences
-    const seriesKey = series.seriesInstanceUid || `series-${series.seriesNumber}`;
-    const seriesPref = preferences.seriesPrefs?.[seriesKey] || {};
-    const stackReverse = seriesPref.stackReverse ?? false;
+        // Per-series preferences
+        const seriesKey = series.seriesInstanceUid || `series-${series.seriesNumber}`;
+        const seriesPref = preferences.seriesPrefs?.[seriesKey] || {};
+        const stackReverse = seriesPref.stackReverse ?? false;
 
-    const [viewState, setViewState] = useState<ViewportState>(DEFAULT_STATE);
-    const [currentFrame, setCurrentFrame] = useState<DecodedFrame | null>(null);
-    const [isBuffering, setIsBuffering] = useState(false);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [isUnsupported, setIsUnsupported] = useState(false);
-    const [missingPermission, setMissingPermission] = useState(false);
-    const [waitingForFiles, setWaitingForFiles] = useState(false);
-    const cineIntervalRef = useRef<number | null>(null);
-    const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | 'zoom' | 'measure' | null }>({ startX: 0, startY: 0, mode: null });
-    const wheelAccumulator = useRef(0);
-    const activeRequestId = useRef(0);
+        const [viewState, setViewState] = useState<ViewportState>(DEFAULT_STATE);
+        const [currentFrame, setCurrentFrame] = useState<DecodedFrame | null>(null);
+        const [isBuffering, setIsBuffering] = useState(false);
+        const [loading, setLoading] = useState(true);
+        const [error, setError] = useState<string | null>(null);
+        const [isUnsupported, setIsUnsupported] = useState(false);
+        const [missingPermission, setMissingPermission] = useState(false);
+        const [waitingForFiles, setWaitingForFiles] = useState(false);
+        const cineIntervalRef = useRef<number | null>(null);
+        const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | 'zoom' | 'measure' | null }>({ startX: 0, startY: 0, mode: null });
+        const wheelAccumulator = useRef(0);
+        const activeRequestId = useRef(0);
 
-    // Series Lifecycle Token (Hard Reset)
-    // Incremented on every series switch to fence off old async tasks
-    const activeSeriesTokenRef = useRef(0);
+        // Series Lifecycle Token (Hard Reset)
+        // Incremented on every series switch to fence off old async tasks
+        const activeSeriesTokenRef = useRef(0);
 
-    // Measurement in-progress state (image pixel coords)
-    const measureRef = useRef<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
+        // Measurement in-progress state (image pixel coords)
+        const measureRef = useRef<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
 
-    // LRU cache for decoded frames (per-component instance = per-series due to key remount)
-    const frameCacheRef = useRef(new FrameLRUCache(CACHE_MAX_SIZE));
+        // LRU cache for decoded frames (per-component instance = per-series due to key remount)
+        const frameCacheRef = useRef(new FrameLRUCache(CACHE_MAX_SIZE));
 
-    // Prefetch state
-    const prefetchQueueRef = useRef<Instance[]>([]);
-    const prefetchQueuedSetRef = useRef(new Set<string>()); // Dedupe
-    const prefetchInflightRef = useRef(0);
-    const prefetchGenerationRef = useRef(0); // Invalidation token
+        // Prefetch state
+        const prefetchQueueRef = useRef<Instance[]>([]);
+        const prefetchQueuedSetRef = useRef(new Set<string>()); // Dedupe
+        const prefetchInflightRef = useRef(0);
+        const prefetchGenerationRef = useRef(0); // Invalidation token
 
-    // Navigation direction tracking (+1 forward, -1 backward)
-    const lastNavDirRef = useRef<1 | -1>(1);
+        // Navigation direction tracking (+1 forward, -1 backward)
+        const lastNavDirRef = useRef<1 | -1>(1);
 
-    // Time-based cine state
-    const cineStartTimeRef = useRef(0);
-    const cineStartIndexRef = useRef(0);
+        // Time-based cine state
+        const cineStartTimeRef = useRef(0);
+        const cineStartIndexRef = useRef(0);
 
-    // Track if we've successfully rendered at least one frame (for safe cine overlay suppression)
-    const hasRenderedFrameRef = useRef(false);
+        // Track if we've successfully rendered at least one frame (for safe cine overlay suppression)
+        const hasRenderedFrameRef = useRef(false);
 
-    // Flicker-free cine: hold last successfully decoded frame to display while buffering
-    const lastGoodFrameRef = useRef<DecodedFrame | null>(null);
+        // Flicker-free cine: hold last successfully decoded frame to display while buffering
+        const lastGoodFrameRef = useRef<DecodedFrame | null>(null);
 
-    // --- Series Switch Hard Reset ---
-    useEffect(() => {
-        // 1. Increment token to invalidate old async/cine
-        activeSeriesTokenRef.current++;
-        const token = activeSeriesTokenRef.current;
+        // --- Series Switch Hard Reset ---
+        useEffect(() => {
+            // 1. Increment token to invalidate old async/cine
+            activeSeriesTokenRef.current++;
+            const token = activeSeriesTokenRef.current;
 
-        // 2. Clear buffers and caches
-        lastGoodFrameRef.current = null;
-        hasRenderedFrameRef.current = false;
-        prefetchQueueRef.current = [];
-        prefetchQueuedSetRef.current.clear();
+            // 2. Clear buffers and caches
+            lastGoodFrameRef.current = null;
+            hasRenderedFrameRef.current = false;
+            prefetchQueueRef.current = [];
+            prefetchQueuedSetRef.current.clear();
 
-        // 3. Reset State (Stop cine, Frame 0)
-        setViewState({
-            ...DEFAULT_STATE,
-            // Preserve tool if desired, or reset to hand? Let's reset to clean slate per request
-            activeTool: 'hand',
-            frameIndex: 0
-        });
-        setCurrentFrame(null);
-        setLoading(true);
-        setError(null);
+            // 3. Reset State (Stop cine, Frame 0)
+            setViewState({
+                ...DEFAULT_STATE,
+                // Preserve tool if desired, or reset to hand? Let's reset to clean slate per request
+                activeTool: 'hand',
+                frameIndex: 0
+            });
+            setCurrentFrame(null);
+            setLoading(true);
+            setError(null);
 
-        // 4. Force stop any lingering cine interval (double safety)
-        if (cineIntervalRef.current) {
-            clearInterval(cineIntervalRef.current);
-            cineIntervalRef.current = null;
-        }
+            // 4. Force stop any lingering cine interval (double safety)
+            if (cineIntervalRef.current) {
+                clearInterval(cineIntervalRef.current);
+                cineIntervalRef.current = null;
+            }
 
-        if (DEBUG_PREFETCH) console.log(`[SeriesSwitch] Token ${token} activated for ${series.seriesInstanceUid}`);
+            if (DEBUG_PREFETCH) console.log(`[SeriesSwitch] Token ${token} activated for ${series.seriesInstanceUid}`);
 
-    }, [series.seriesInstanceUid]);
-
-
-
-
-    const instances = series.instances;
-    const currentInstance = instances[viewState.frameIndex];
-    // Use series classification from metadata worker
-    const canCine = series.cineEligible;
-    const cineReason = series.cineReason;
+        }, [series.seriesInstanceUid]);
 
 
 
-    // Register files with decode bridge via Registry
-    useEffect(() => {
-        let mounted = true;
 
-        const resolveFiles = async () => {
-            setMissingPermission(false);
-            setWaitingForFiles(false);
+        const instances = series.instances;
+        const currentInstance = instances[viewState.frameIndex];
+        // Use series classification from metadata worker
+        const canCine = series.cineEligible;
+        const cineReason = series.cineReason;
 
-            const fileEntries: { instance: Instance; file: File }[] = [];
-            let permissionErrorFound = false;
 
-            for (const instance of instances) {
-                const entry = fileRegistry.get(instance.fileKey);
 
-                if (!entry) continue;
+        // Register files with decode bridge via Registry
+        useEffect(() => {
+            let mounted = true;
 
-                try {
-                    let file: File;
-                    if (entry.kind === 'file') {
-                        file = entry.file;
-                    } else {
-                        // Prefer cached file if available (from scan)
-                        if (entry.file) {
+            const resolveFiles = async () => {
+                setMissingPermission(false);
+                setWaitingForFiles(false);
+
+                const fileEntries: { instance: Instance; file: File }[] = [];
+                let permissionErrorFound = false;
+
+                for (const instance of instances) {
+                    const entry = fileRegistry.get(instance.fileKey);
+
+                    if (!entry) continue;
+
+                    try {
+                        let file: File;
+                        if (entry.kind === 'file') {
                             file = entry.file;
                         } else {
-                            // Fallback to getting file from handle
-                            file = await entry.handle.getFile();
+                            // Prefer cached file if available (from scan)
+                            if (entry.file) {
+                                file = entry.file;
+                            } else {
+                                // Fallback to getting file from handle
+                                file = await entry.handle.getFile();
+                            }
                         }
+                        fileEntries.push({ instance, file });
+                    } catch (err) {
+                        // Check for permission errors
+                        if (err instanceof Error && (err.name === 'NotAllowedError' || err.name === 'NotFoundError')) {
+                            permissionErrorFound = true;
+                        }
+                        console.error('Failed to resolve file for instance', instance.sopInstanceUid, err);
                     }
-                    fileEntries.push({ instance, file });
-                } catch (err) {
-                    // Check for permission errors
-                    if (err instanceof Error && (err.name === 'NotAllowedError' || err.name === 'NotFoundError')) {
-                        permissionErrorFound = true;
-                    }
-                    console.error('Failed to resolve file for instance', instance.sopInstanceUid, err);
                 }
-            }
 
-            if (mounted) {
-                if (permissionErrorFound) {
-                    setMissingPermission(true);
-                } else if (fileEntries.length < instances.length) {
-                    // If we have some files but not all, we might be scanning or restricted
-                    setWaitingForFiles(true);
+                if (mounted) {
+                    if (permissionErrorFound) {
+                        setMissingPermission(true);
+                    } else if (fileEntries.length < instances.length) {
+                        // If we have some files but not all, we might be scanning or restricted
+                        setWaitingForFiles(true);
 
-                    // Register what we have anyway
-                    if (fileEntries.length > 0) {
+                        // Register what we have anyway
+                        if (fileEntries.length > 0) {
+                            registerInstanceFiles(fileEntries);
+                        }
+                    } else {
                         registerInstanceFiles(fileEntries);
                     }
-                } else {
-                    registerInstanceFiles(fileEntries);
                 }
+            };
+
+            resolveFiles();
+
+            return () => {
+                mounted = false;
+                clearInstanceFiles();
+            };
+        }, [instances, fileRegistry]);
+
+        // Load frame when index changes (cache-first)
+        useEffect(() => {
+            if (!currentInstance) return;
+
+            // Check transfer syntax support
+            if (!isTransferSyntaxSupported(currentInstance.transferSyntaxUid)) {
+                setError(`Unsupported: ${currentInstance.transferSyntaxUid}`);
+                setIsUnsupported(true);
+                setLoading(false);
+                return;
             }
-        };
 
-        resolveFiles();
-
-        return () => {
-            mounted = false;
-            clearInstanceFiles();
-        };
-    }, [instances, fileRegistry]);
-
-    // Load frame when index changes (cache-first)
-    useEffect(() => {
-        if (!currentInstance) return;
-
-        // Check transfer syntax support
-        if (!isTransferSyntaxSupported(currentInstance.transferSyntaxUid)) {
-            setError(`Unsupported: ${currentInstance.transferSyntaxUid}`);
-            setIsUnsupported(true);
-            setLoading(false);
-            return;
-        }
-
-        // Check multi-frame
-        if (currentInstance.numberOfFrames && currentInstance.numberOfFrames > 1) {
-            setError('Multi-frame DICOM not yet supported');
-            setIsUnsupported(true);
-            setLoading(false);
-            return;
-        }
-
-        const cacheKey = `${currentInstance.fileKey}:0`;
-        const cache = frameCacheRef.current;
-
-        // Cache hit - instant display
-        const cachedFrame = cache.get(cacheKey);
-        if (cachedFrame) {
-            if (DEBUG_PREFETCH) console.log('[PREFETCH] Cache HIT:', cacheKey);
-            setCurrentFrame(cachedFrame);
-            if (viewState.frameIndex === 0 || !currentFrame) {
-                setViewState(prev => ({
-                    ...prev,
-                    windowCenter: cachedFrame.windowCenter,
-                    windowWidth: cachedFrame.windowWidth,
-                }));
+            // Check multi-frame
+            if (currentInstance.numberOfFrames && currentInstance.numberOfFrames > 1) {
+                setError('Multi-frame DICOM not yet supported');
+                setIsUnsupported(true);
+                setLoading(false);
+                return;
             }
-            setLoading(false);
-            setError(null);
-            return;
-        }
 
-        // Cache miss - decode
-        if (DEBUG_PREFETCH) console.log('[PREFETCH] Cache MISS:', cacheKey);
+            const cacheKey = `${currentInstance.fileKey}:0`;
+            const cache = frameCacheRef.current;
 
-        // Increment ID for this new frame load attempt - Latest Wins
-        const requestId = ++activeRequestId.current;
-        const token = activeSeriesTokenRef.current;
-
-        // Only show loading if NOT playing cine (avoid flicker)
-        // Keep last frame visible during decode
-        if (!viewState.isPlaying) {
-            setLoading(true);
-        }
-        setError(null);
-        setIsUnsupported(false);
-
-        decodeFrame(currentInstance, 0)
-            .then(frame => {
-                // Ignore if stale request or series changed
-                if (requestId !== activeRequestId.current || token !== activeSeriesTokenRef.current) return;
-
-                // Store in cache
-                cache.set(cacheKey, frame);
-
-                setCurrentFrame(frame);
-                // Set initial window from frame defaults
+            // Cache hit - instant display
+            const cachedFrame = cache.get(cacheKey);
+            if (cachedFrame) {
+                if (DEBUG_PREFETCH) console.log('[PREFETCH] Cache HIT:', cacheKey);
+                setCurrentFrame(cachedFrame);
                 if (viewState.frameIndex === 0 || !currentFrame) {
                     setViewState(prev => ({
                         ...prev,
-                        windowCenter: frame.windowCenter,
-                        windowWidth: frame.windowWidth,
+                        windowCenter: cachedFrame.windowCenter,
+                        windowWidth: cachedFrame.windowWidth,
                     }));
                 }
                 setLoading(false);
-            })
-            .catch(err => {
-                // Ignore if stale request or series changed
-                if (requestId !== activeRequestId.current || token !== activeSeriesTokenRef.current) return;
+                setError(null);
+                return;
+            }
 
-                if (err instanceof DecodeError) {
-                    setError(err.message);
-                    setIsUnsupported(err.isUnsupported);
-                } else {
-                    setError(err.message || 'Decode failed');
-                }
-                setLoading(false);
-            });
-    }, [currentInstance, viewState.frameIndex]);
+            // Cache miss - decode
+            if (DEBUG_PREFETCH) console.log('[PREFETCH] Cache MISS:', cacheKey);
 
-    // Prefetch pump - runs after frame changes
-    const runPrefetchPump = useCallback(() => {
-        const queue = prefetchQueueRef.current;
-        const cache = frameCacheRef.current;
-        const generation = prefetchGenerationRef.current;
-        const token = activeSeriesTokenRef.current;
+            // Increment ID for this new frame load attempt - Latest Wins
+            const requestId = ++activeRequestId.current;
+            const token = activeSeriesTokenRef.current;
 
-        // Pump while we have capacity and items in queue
-        while (prefetchInflightRef.current < PREFETCH_MAX_INFLIGHT && queue.length > 0) {
-            const instance = queue.shift()!;
-            const cacheKey = `${instance.fileKey}:0`;
+            // Only show loading if NOT playing cine (avoid flicker)
+            // Keep last frame visible during decode
+            if (!viewState.isPlaying) {
+                setLoading(true);
+            }
+            setError(null);
+            setIsUnsupported(false);
 
-            // Skip if already cached or unsupported
-            if (cache.has(cacheKey)) continue;
-            if (!isTransferSyntaxSupported(instance.transferSyntaxUid)) continue;
-            if (instance.numberOfFrames && instance.numberOfFrames > 1) continue;
-
-            prefetchInflightRef.current++;
-            if (DEBUG_PREFETCH) console.log('[PREFETCH] Fetching:', cacheKey, 'inflight:', prefetchInflightRef.current);
-
-            decodeFrame(instance, 0)
+            decodeFrame(currentInstance, 0)
                 .then(frame => {
-                    // Check generation and series token
-                    if (prefetchGenerationRef.current !== generation) {
-                        if (DEBUG_PREFETCH) console.log('[PREFETCH] Stale generation, discarding:', cacheKey);
-                        return;
-                    }
-                    if (activeSeriesTokenRef.current !== token) return;
+                    // Ignore if stale request or series changed
+                    if (requestId !== activeRequestId.current || token !== activeSeriesTokenRef.current) return;
 
+                    // Store in cache
                     cache.set(cacheKey, frame);
-                    if (DEBUG_PREFETCH) console.log('[PREFETCH] Cached:', cacheKey, 'size:', cache.size);
-                })
-                .catch(() => {
-                    // Silently ignore prefetch errors
-                })
-                .finally(() => {
-                    prefetchInflightRef.current--;
-                    // Pump again
-                    if (prefetchGenerationRef.current === generation && activeSeriesTokenRef.current === token) {
-                        runPrefetchPump();
+
+                    setCurrentFrame(frame);
+                    // Set initial window from frame defaults
+                    if (viewState.frameIndex === 0 || !currentFrame) {
+                        setViewState(prev => ({
+                            ...prev,
+                            windowCenter: frame.windowCenter,
+                            windowWidth: frame.windowWidth,
+                        }));
                     }
+                    setLoading(false);
+                })
+                .catch(err => {
+                    // Ignore if stale request or series changed
+                    if (requestId !== activeRequestId.current || token !== activeSeriesTokenRef.current) return;
+
+                    if (err instanceof DecodeError) {
+                        setError(err.message);
+                        setIsUnsupported(err.isUnsupported);
+                    } else {
+                        setError(err.message || 'Decode failed');
+                    }
+                    setLoading(false);
                 });
-        }
-    }, []);
+        }, [currentInstance, viewState.frameIndex]);
 
-    // Schedule prefetch after frame index changes (direction-aware)
-    useEffect(() => {
-        const startIdx = viewState.frameIndex;
-        const dir = lastNavDirRef.current;
-        const queue: Instance[] = [];
-        const queuedSet = prefetchQueuedSetRef.current;
-        queuedSet.clear();
+        // Prefetch pump - runs after frame changes
+        const runPrefetchPump = useCallback(() => {
+            const queue = prefetchQueueRef.current;
+            const cache = frameCacheRef.current;
+            const generation = prefetchGenerationRef.current;
+            const token = activeSeriesTokenRef.current;
 
-        // Use larger prefetch window during cine playback
-        const prefetchAhead = viewState.isPlaying ? PREFETCH_CINE_AHEAD : PREFETCH_MANUAL_AHEAD;
-        const prefetchBehind = viewState.isPlaying ? PREFETCH_CINE_BEHIND : PREFETCH_MANUAL_BEHIND;
+            // Pump while we have capacity and items in queue
+            while (prefetchInflightRef.current < PREFETCH_MAX_INFLIGHT && queue.length > 0) {
+                const instance = queue.shift()!;
+                const cacheKey = `${instance.fileKey}:0`;
 
-        // Prefetch ahead in navigation direction
-        for (let i = 1; i <= prefetchAhead; i++) {
-            let idx: number;
-            if (dir > 0) {
-                idx = (startIdx + i) % instances.length;
-            } else {
-                idx = (startIdx - i + instances.length) % instances.length;
+                // Skip if already cached or unsupported
+                if (cache.has(cacheKey)) continue;
+                if (!isTransferSyntaxSupported(instance.transferSyntaxUid)) continue;
+                if (instance.numberOfFrames && instance.numberOfFrames > 1) continue;
+
+                prefetchInflightRef.current++;
+                if (DEBUG_PREFETCH) console.log('[PREFETCH] Fetching:', cacheKey, 'inflight:', prefetchInflightRef.current);
+
+                decodeFrame(instance, 0)
+                    .then(frame => {
+                        // Check generation and series token
+                        if (prefetchGenerationRef.current !== generation) {
+                            if (DEBUG_PREFETCH) console.log('[PREFETCH] Stale generation, discarding:', cacheKey);
+                            return;
+                        }
+                        if (activeSeriesTokenRef.current !== token) return;
+
+                        cache.set(cacheKey, frame);
+                        if (DEBUG_PREFETCH) console.log('[PREFETCH] Cached:', cacheKey, 'size:', cache.size);
+                    })
+                    .catch(() => {
+                        // Silently ignore prefetch errors
+                    })
+                    .finally(() => {
+                        prefetchInflightRef.current--;
+                        // Pump again
+                        if (prefetchGenerationRef.current === generation && activeSeriesTokenRef.current === token) {
+                            runPrefetchPump();
+                        }
+                    });
             }
-            const inst = instances[idx];
-            if (inst && !queuedSet.has(inst.fileKey)) {
-                queue.push(inst);
-                queuedSet.add(inst.fileKey);
+        }, []);
+
+        // Schedule prefetch after frame index changes (direction-aware)
+        useEffect(() => {
+            const startIdx = viewState.frameIndex;
+            const dir = lastNavDirRef.current;
+            const queue: Instance[] = [];
+            const queuedSet = prefetchQueuedSetRef.current;
+            queuedSet.clear();
+
+            // Use larger prefetch window during cine playback
+            const prefetchAhead = viewState.isPlaying ? PREFETCH_CINE_AHEAD : PREFETCH_MANUAL_AHEAD;
+            const prefetchBehind = viewState.isPlaying ? PREFETCH_CINE_BEHIND : PREFETCH_MANUAL_BEHIND;
+
+            // Prefetch ahead in navigation direction
+            for (let i = 1; i <= prefetchAhead; i++) {
+                let idx: number;
+                if (dir > 0) {
+                    idx = (startIdx + i) % instances.length;
+                } else {
+                    idx = (startIdx - i + instances.length) % instances.length;
+                }
+                const inst = instances[idx];
+                if (inst && !queuedSet.has(inst.fileKey)) {
+                    queue.push(inst);
+                    queuedSet.add(inst.fileKey);
+                }
             }
-        }
 
-        // Prefetch behind (opposite direction) for back-scroll resilience
-        for (let i = 1; i <= prefetchBehind; i++) {
-            let idx: number;
-            if (dir > 0) {
-                idx = (startIdx - i + instances.length) % instances.length;
-            } else {
-                idx = (startIdx + i) % instances.length;
+            // Prefetch behind (opposite direction) for back-scroll resilience
+            for (let i = 1; i <= prefetchBehind; i++) {
+                let idx: number;
+                if (dir > 0) {
+                    idx = (startIdx - i + instances.length) % instances.length;
+                } else {
+                    idx = (startIdx + i) % instances.length;
+                }
+                const inst = instances[idx];
+                if (inst && !queuedSet.has(inst.fileKey)) {
+                    queue.push(inst);
+                    queuedSet.add(inst.fileKey);
+                }
             }
-            const inst = instances[idx];
-            if (inst && !queuedSet.has(inst.fileKey)) {
-                queue.push(inst);
-                queuedSet.add(inst.fileKey);
-            }
-        }
 
-        prefetchQueueRef.current = queue;
-        runPrefetchPump();
-    }, [viewState.frameIndex, viewState.isPlaying, instances, runPrefetchPump]);
+            prefetchQueueRef.current = queue;
+            runPrefetchPump();
+        }, [viewState.frameIndex, viewState.isPlaying, instances, runPrefetchPump]);
 
-    // Render to canvas
-    useEffect(() => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-
-        // Size canvas to container
-        const container = containerRef.current;
-        if (container) {
-            const rect = container.getBoundingClientRect();
-            canvas.width = rect.width;
-            canvas.height = rect.height;
-        }
-
-        // Error state takes priority
-        if (error) {
-            renderError(canvas, error, isUnsupported);
-            return;
-        }
-
-        // Resolve authoritative frame
-        const authority = resolveFrameAuthority(
-            viewState.frameIndex,
-            currentFrame,
-            lastGoodFrameRef.current,
-            viewState.isPlaying
-        );
-
-        if (authority.reason === 'current' && authority.frame) {
-            lastGoodFrameRef.current = authority.frame;
-        }
-
-        const isFallback = authority.isFallback;
-        if (isBuffering !== isFallback) {
-            setIsBuffering(isFallback);
-        }
-
-        const frameToRender = authority.frame;
-
-        // Handle loading state
-        if (!frameToRender) {
-            if (loading) {
-                renderLoading(canvas, 'Decoding...');
-            }
-            return;
-        }
-
-        // Render the frame (current or last good)
-        renderFrame(canvas, frameToRender, viewState);
-        hasRenderedFrameRef.current = true;
-
-        // Compute image-to-canvas transform for measurements
-        const imageAspect = frameToRender.width / frameToRender.height;
-        const canvasAspect = canvas.width / canvas.height;
-        let displayWidth: number;
-        let displayHeight: number;
-
-        if (imageAspect > canvasAspect) {
-            displayWidth = canvas.width;
-            displayHeight = canvas.width / imageAspect;
-        } else {
-            displayHeight = canvas.height;
-            displayWidth = canvas.height * imageAspect;
-        }
-
-        displayWidth *= viewState.zoom;
-        displayHeight *= viewState.zoom;
-
-        const offsetX = (canvas.width - displayWidth) / 2 + viewState.panX;
-        const offsetY = (canvas.height - displayHeight) / 2 + viewState.panY;
-        const scale = displayWidth / frameToRender.width;
-
-        // Get pixel spacing from current instance
-        let pixelSpacing: number[] | undefined;
-        if (currentInstance?.pixelSpacing) {
-            const parts = currentInstance.pixelSpacing.split('\\').map(parseFloat);
-            if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-                pixelSpacing = parts;
-            }
-        } else if (currentInstance?.imagerPixelSpacing) {
-            const parts = currentInstance.imagerPixelSpacing.split('\\').map(parseFloat);
-            if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-                pixelSpacing = parts;
-            }
-        }
-
-        drawOverlay(canvas, {
-            frameIndex: viewState.frameIndex,
-            totalFrames: instances.length,
-            windowCenter: viewState.windowCenter,
-            windowWidth: viewState.windowWidth,
-            zoom: viewState.zoom,
-            dimensions: { width: frameToRender.width, height: frameToRender.height },
-            pixelSpacing,
-            geometryTrust: series.geometryTrustInfo,
-            measurements: viewState.measurements,
-            inProgressMeasurement: measureRef.current,
-            imageToCanvasTransform: { scale, offsetX, offsetY },
-            cineInfo: {
-                isPlaying: viewState.isPlaying,
-                fps: viewState.cineFrameRate,
-                canCine,
-                isBuffering: isFallback,
-                cineReason
-            }
-        });
-    }, [currentFrame, viewState, loading, error, isUnsupported, instances.length, currentInstance, series.geometryTrustInfo, canCine, cineReason]);
-
-    // Resize handler
-    useEffect(() => {
-        const handleResize = () => {
-            const container = containerRef.current;
+        // Render to canvas
+        useEffect(() => {
             const canvas = canvasRef.current;
-            if (container && canvas) {
+            if (!canvas) return;
+
+            // Size canvas to container
+            const container = containerRef.current;
+            if (container) {
                 const rect = container.getBoundingClientRect();
                 canvas.width = rect.width;
                 canvas.height = rect.height;
-                // Trigger re-render
-                setViewState(prev => ({ ...prev }));
             }
-        };
 
-        window.addEventListener('resize', handleResize);
-        handleResize();
-        return () => window.removeEventListener('resize', handleResize);
-    }, []);
+            // Error state takes priority
+            if (error) {
+                renderError(canvas, error, isUnsupported);
+                return;
+            }
 
+            // Resolve authoritative frame
+            const authority = resolveFrameAuthority(
+                viewState.frameIndex,
+                currentFrame,
+                lastGoodFrameRef.current,
+                viewState.isPlaying
+            );
 
+            if (authority.reason === 'current' && authority.frame) {
+                lastGoodFrameRef.current = authority.frame;
+            }
 
-    const toggleCine = useCallback(() => {
-        // Guard: don't start cine on short series
-        if (!canCine) return;
+            const isFallback = authority.isFallback;
+            if (isBuffering !== isFallback) {
+                setIsBuffering(isFallback);
+            }
 
-        setViewState(prev => {
-            const newPlaying = !prev.isPlaying;
+            const frameToRender = authority.frame;
 
-            if (newPlaying) {
-                // Set navigation direction to forward for cine
-                lastNavDirRef.current = 1;
+            // Handle loading state
+            if (!frameToRender) {
+                if (loading) {
+                    renderLoading(canvas, 'Decoding...');
+                }
+                return;
+            }
 
-                // Time-based cine: record start time and index
-                cineStartTimeRef.current = performance.now();
-                cineStartIndexRef.current = prev.frameIndex;
+            // Render the frame (current or last good)
+            renderFrame(canvas, frameToRender, viewState);
+            hasRenderedFrameRef.current = true;
+
+            // Compute image-to-canvas transform for measurements
+            const imageAspect = frameToRender.width / frameToRender.height;
+            const canvasAspect = canvas.width / canvas.height;
+            let displayWidth: number;
+            let displayHeight: number;
+
+            if (imageAspect > canvasAspect) {
+                displayWidth = canvas.width;
+                displayHeight = canvas.width / imageAspect;
             } else {
-                // Stop cine - clear timing refs
-                cineStartTimeRef.current = 0;
-                cineStartIndexRef.current = 0;
+                displayHeight = canvas.height;
+                displayWidth = canvas.height * imageAspect;
             }
 
-            return { ...prev, isPlaying: newPlaying };
-        });
-    }, [canCine]);
+            displayWidth *= viewState.zoom;
+            displayHeight *= viewState.zoom;
 
-    // Cine loop effect - manages the interval based on isPlaying state
-    useEffect(() => {
-        const token = activeSeriesTokenRef.current;
+            const offsetX = (canvas.width - displayWidth) / 2 + viewState.panX;
+            const offsetY = (canvas.height - displayHeight) / 2 + viewState.panY;
+            const scale = displayWidth / frameToRender.width;
 
-        // Stop cine if series becomes ineligible (too few frames)
-        if (viewState.isPlaying && !canCine) {
-            setViewState(prev => ({ ...prev, isPlaying: false }));
-            return;
-        }
-
-        // Only run interval when playing
-        if (!viewState.isPlaying) {
-            // Ensure cleanup when not playing
-            if (cineIntervalRef.current) {
-                clearInterval(cineIntervalRef.current);
-                cineIntervalRef.current = null;
-            }
-            return;
-        }
-
-        const frameDurationMs = 1000 / viewState.cineFrameRate;
-        const totalFrames = instances.length;
-
-        // Kickstart prefetch for smoother cine start
-        const queue: Instance[] = [];
-        const queuedSet = prefetchQueuedSetRef.current;
-        queuedSet.clear();
-        for (let i = 1; i <= PREFETCH_CINE_AHEAD; i++) {
-            const idx = (viewState.frameIndex + i) % totalFrames;
-            const inst = instances[idx];
-            if (inst && !queuedSet.has(inst.fileKey)) {
-                queue.push(inst);
-                queuedSet.add(inst.fileKey);
-            }
-        }
-        prefetchQueueRef.current = queue;
-        runPrefetchPump();
-
-        // Time-based cine interval (catch-up skip)
-        cineIntervalRef.current = window.setInterval(() => {
-            // Strict token check to prevent phantom steps after series switch
-            if (activeSeriesTokenRef.current !== token) return;
-
-            setViewState(p => {
-                // CRITICAL: Hard guard - do NOT advance if not playing
-                if (!p.isPlaying) return p;
-
-                const elapsed = performance.now() - cineStartTimeRef.current;
-                const framesSinceStart = Math.floor(elapsed / frameDurationMs);
-                const targetIndex = (cineStartIndexRef.current + framesSinceStart) % totalFrames;
-
-                // Only update if target is different (skip duplicates)
-                if (p.frameIndex === targetIndex) return p;
-                return { ...p, frameIndex: targetIndex };
-            });
-        }, frameDurationMs / 2); // Check at 2x rate for responsiveness
-
-        // Cleanup on effect teardown (when isPlaying becomes false or component unmounts)
-        return () => {
-            if (cineIntervalRef.current) {
-                clearInterval(cineIntervalRef.current);
-                cineIntervalRef.current = null;
-            }
-        };
-    }, [viewState.isPlaying, viewState.cineFrameRate, instances, runPrefetchPump, canCine]);
-
-    // Mouse handlers
-    // Native wheel handler for non-passive prevention (stack scroll)
-    useEffect(() => {
-        const container = containerRef.current;
-        if (!container) return;
-
-        const onWheel = (e: WheelEvent) => {
-            e.preventDefault();
-
-            // Guard: Single frame series should not scroll (stops 1-frame jitter)
-            if (instances.length <= 1) return;
-
-            if (e.ctrlKey || e.metaKey) {
-                // Zoom
-                const delta = e.deltaY > 0 ? 0.9 : 1.1;
-                setViewState(prev => ({
-                    ...prev,
-                    zoom: Math.max(0.1, Math.min(10, prev.zoom * delta)),
-                }));
-            } else {
-                // Stack scroll with modifier support
-                // Shift = fast (5 frames), Alt = fine (1 frame with lower threshold)
-                const fastMode = e.shiftKey;
-                const fineMode = e.altKey;
-
-                const threshold = fineMode ? 20 : 40; // Lower threshold for fine mode
-                const multiplier = fastMode ? 5 : 1;
-
-                wheelAccumulator.current += e.deltaY;
-
-                if (Math.abs(wheelAccumulator.current) >= threshold) {
-                    const rawSteps = Math.trunc(wheelAccumulator.current / threshold);
-                    wheelAccumulator.current %= threshold;
-
-                    if (rawSteps !== 0) {
-                        const dir = stackReverse ? -1 : 1;
-                        const steps = rawSteps * multiplier * dir;
-                        // Track navigation direction
-                        lastNavDirRef.current = steps > 0 ? 1 : -1;
-
-                        setViewState(prev => ({
-                            ...prev,
-                            frameIndex: Math.max(0, Math.min(instances.length - 1, prev.frameIndex + steps))
-                        }));
-                    }
+            // Get pixel spacing from current instance
+            let pixelSpacing: number[] | undefined;
+            if (currentInstance?.pixelSpacing) {
+                const parts = currentInstance.pixelSpacing.split('\\').map(parseFloat);
+                if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+                    pixelSpacing = parts;
+                }
+            } else if (currentInstance?.imagerPixelSpacing) {
+                const parts = currentInstance.imagerPixelSpacing.split('\\').map(parseFloat);
+                if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+                    pixelSpacing = parts;
                 }
             }
-        };
 
-        container.addEventListener('wheel', onWheel, { passive: false });
-        // Reset accumulator when series changes to prevent jump
-        wheelAccumulator.current = 0;
-        return () => container.removeEventListener('wheel', onWheel);
-    }, [series.seriesInstanceUid, instances.length, stackReverse]);
+            drawOverlay(canvas, {
+                frameIndex: viewState.frameIndex,
+                totalFrames: instances.length,
+                windowCenter: viewState.windowCenter,
+                windowWidth: viewState.windowWidth,
+                zoom: viewState.zoom,
+                dimensions: { width: frameToRender.width, height: frameToRender.height },
+                pixelSpacing,
+                geometryTrust: series.geometryTrustInfo,
+                measurements: viewState.measurements,
+                inProgressMeasurement: measureRef.current,
+                imageToCanvasTransform: { scale, offsetX, offsetY },
+                cineInfo: {
+                    isPlaying: viewState.isPlaying,
+                    fps: viewState.cineFrameRate,
+                    canCine,
+                    isBuffering: isFallback,
+                    cineReason
+                }
+            });
+        }, [currentFrame, viewState, loading, error, isUnsupported, instances.length, currentInstance, series.geometryTrustInfo, canCine, cineReason]);
 
-    // Keyboard Shortcuts
-    useEffect(() => {
-        const handleKey = (e: KeyboardEvent) => {
-            const action = mapKeyToAction(e);
+        // Resize handler
+        useEffect(() => {
+            const handleResize = () => {
+                const container = containerRef.current;
+                const canvas = canvasRef.current;
+                if (container && canvas) {
+                    const rect = container.getBoundingClientRect();
+                    canvas.width = rect.width;
+                    canvas.height = rect.height;
+                    // Trigger re-render
+                    setViewState(prev => ({ ...prev }));
+                }
+            };
+
+            window.addEventListener('resize', handleResize);
+            handleResize();
+            return () => window.removeEventListener('resize', handleResize);
+        }, []);
+
+
+
+        const toggleCine = useCallback(() => {
+            // Guard: don't start cine on short series
+            if (!canCine) return;
+
+            setViewState(prev => {
+                const newPlaying = !prev.isPlaying;
+
+                if (newPlaying) {
+                    // Set navigation direction to forward for cine
+                    lastNavDirRef.current = 1;
+
+                    // Time-based cine: record start time and index
+                    cineStartTimeRef.current = performance.now();
+                    cineStartIndexRef.current = prev.frameIndex;
+                } else {
+                    // Stop cine - clear timing refs
+                    cineStartTimeRef.current = 0;
+                    cineStartIndexRef.current = 0;
+                }
+
+                return { ...prev, isPlaying: newPlaying };
+            });
+        }, [canCine]);
+
+        // Cine loop effect - manages the interval based on isPlaying state
+        useEffect(() => {
+            const token = activeSeriesTokenRef.current;
+
+            // Stop cine if series becomes ineligible (too few frames)
+            if (viewState.isPlaying && !canCine) {
+                setViewState(prev => ({ ...prev, isPlaying: false }));
+                return;
+            }
+
+            // Only run interval when playing
+            if (!viewState.isPlaying) {
+                // Ensure cleanup when not playing
+                if (cineIntervalRef.current) {
+                    clearInterval(cineIntervalRef.current);
+                    cineIntervalRef.current = null;
+                }
+                return;
+            }
+
+            const frameDurationMs = 1000 / viewState.cineFrameRate;
+            const totalFrames = instances.length;
+
+            // Kickstart prefetch for smoother cine start
+            const queue: Instance[] = [];
+            const queuedSet = prefetchQueuedSetRef.current;
+            queuedSet.clear();
+            for (let i = 1; i <= PREFETCH_CINE_AHEAD; i++) {
+                const idx = (viewState.frameIndex + i) % totalFrames;
+                const inst = instances[idx];
+                if (inst && !queuedSet.has(inst.fileKey)) {
+                    queue.push(inst);
+                    queuedSet.add(inst.fileKey);
+                }
+            }
+            prefetchQueueRef.current = queue;
+            runPrefetchPump();
+
+            // Time-based cine interval (catch-up skip)
+            cineIntervalRef.current = window.setInterval(() => {
+                // Strict token check to prevent phantom steps after series switch
+                if (activeSeriesTokenRef.current !== token) return;
+
+                setViewState(p => {
+                    // CRITICAL: Hard guard - do NOT advance if not playing
+                    if (!p.isPlaying) return p;
+
+                    const elapsed = performance.now() - cineStartTimeRef.current;
+                    const framesSinceStart = Math.floor(elapsed / frameDurationMs);
+                    const targetIndex = (cineStartIndexRef.current + framesSinceStart) % totalFrames;
+
+                    // Only update if target is different (skip duplicates)
+                    if (p.frameIndex === targetIndex) return p;
+                    return { ...p, frameIndex: targetIndex };
+                });
+            }, frameDurationMs / 2); // Check at 2x rate for responsiveness
+
+            // Cleanup on effect teardown (when isPlaying becomes false or component unmounts)
+            return () => {
+                if (cineIntervalRef.current) {
+                    clearInterval(cineIntervalRef.current);
+                    cineIntervalRef.current = null;
+                }
+            };
+        }, [viewState.isPlaying, viewState.cineFrameRate, instances, runPrefetchPump, canCine]);
+
+        // Mouse handlers
+        // Native wheel handler for non-passive prevention (stack scroll)
+        useEffect(() => {
+            const container = containerRef.current;
+            if (!container) return;
+
+            const onWheel = (e: WheelEvent) => {
+                e.preventDefault();
+
+                // Guard: Single frame series should not scroll (stops 1-frame jitter)
+                if (instances.length <= 1) return;
+
+                if (e.ctrlKey || e.metaKey) {
+                    // Zoom
+                    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+                    setViewState(prev => ({
+                        ...prev,
+                        zoom: Math.max(0.1, Math.min(10, prev.zoom * delta)),
+                    }));
+                } else {
+                    // Stack scroll with modifier support
+                    // Shift = fast (5 frames), Alt = fine (1 frame with lower threshold)
+                    const fastMode = e.shiftKey;
+                    const fineMode = e.altKey;
+
+                    const threshold = fineMode ? 20 : 40; // Lower threshold for fine mode
+                    const multiplier = fastMode ? 5 : 1;
+
+                    wheelAccumulator.current += e.deltaY;
+
+                    if (Math.abs(wheelAccumulator.current) >= threshold) {
+                        const rawSteps = Math.trunc(wheelAccumulator.current / threshold);
+                        wheelAccumulator.current %= threshold;
+
+                        if (rawSteps !== 0) {
+                            const dir = stackReverse ? -1 : 1;
+                            const steps = rawSteps * multiplier * dir;
+                            // Track navigation direction
+                            lastNavDirRef.current = steps > 0 ? 1 : -1;
+
+                            setViewState(prev => ({
+                                ...prev,
+                                frameIndex: Math.max(0, Math.min(instances.length - 1, prev.frameIndex + steps))
+                            }));
+                        }
+                    }
+                }
+            };
+
+            container.addEventListener('wheel', onWheel, { passive: false });
+            // Reset accumulator when series changes to prevent jump
+            wheelAccumulator.current = 0;
+            return () => container.removeEventListener('wheel', onWheel);
+        }, [series.seriesInstanceUid, instances.length, stackReverse]);
+
+        // Imperative action handler for external routing (from MultiViewport)
+        const applyAction = useCallback((action: ShortcutAction) => {
             if (!action) return;
-
-            e.preventDefault();
 
             switch (action) {
                 case 'TOGGLE_CINE':
@@ -788,7 +791,6 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                     const preset = getPreset(key);
                     if (preset) {
                         setViewState(prev => ({ ...prev, windowCenter: preset.wc, windowWidth: preset.ww }));
-                        // HUD Feedback via status message
                         dispatch({ type: 'SET_STATUS', message: `Preset: ${preset.label} (WC: ${preset.wc}, WW: ${preset.ww})` });
                     }
                     break;
@@ -797,324 +799,326 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                     dispatch({ type: 'SET_SHORTCUTS_VISIBLE', visible: true });
                     break;
             }
-        };
+        }, [instances.length, stackReverse, toggleCine, dispatch, currentFrame]);
 
-        window.addEventListener('keydown', handleKey);
-        return () => window.removeEventListener('keydown', handleKey);
-    }, [instances.length, stackReverse, toggleCine, dispatch, currentFrame]);
+        // Expose imperative handle for external action routing
+        useImperativeHandle(ref, () => ({
+            applyAction,
+        }), [applyAction]);
 
-    // Convert canvas coordinates to image pixel coordinates
-    const canvasToImageCoords = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
-        const canvas = canvasRef.current;
-        const container = containerRef.current;
-        // Use resolveFrameAuthority to ensure we interact with the visible frame
-        const authority = resolveFrameAuthority(
-            viewState.frameIndex,
-            currentFrame,
-            lastGoodFrameRef.current,
-            viewState.isPlaying
-        );
-        const frameForTools = authority.frame;
-        if (!canvas || !container || !frameForTools) return null;
+        // Convert canvas coordinates to image pixel coordinates
+        const canvasToImageCoords = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
+            const canvas = canvasRef.current;
+            const container = containerRef.current;
+            // Use resolveFrameAuthority to ensure we interact with the visible frame
+            const authority = resolveFrameAuthority(
+                viewState.frameIndex,
+                currentFrame,
+                lastGoodFrameRef.current,
+                viewState.isPlaying
+            );
+            const frameForTools = authority.frame;
+            if (!canvas || !container || !frameForTools) return null;
 
-        const rect = canvas.getBoundingClientRect();
-        const canvasX = clientX - rect.left;
-        const canvasY = clientY - rect.top;
+            const rect = canvas.getBoundingClientRect();
+            const canvasX = clientX - rect.left;
+            const canvasY = clientY - rect.top;
 
-        // Reverse the display transform from renderFrame
-        const imageAspect = frameForTools.width / frameForTools.height;
-        const canvasAspect = canvas.width / canvas.height;
+            // Reverse the display transform from renderFrame
+            const imageAspect = frameForTools.width / frameForTools.height;
+            const canvasAspect = canvas.width / canvas.height;
 
-        let displayWidth: number;
-        let displayHeight: number;
+            let displayWidth: number;
+            let displayHeight: number;
 
-        if (imageAspect > canvasAspect) {
-            displayWidth = canvas.width;
-            displayHeight = canvas.width / imageAspect;
-        } else {
-            displayHeight = canvas.height;
-            displayWidth = canvas.height * imageAspect;
-        }
-
-        displayWidth *= viewState.zoom;
-        displayHeight *= viewState.zoom;
-
-        const imageX = (canvas.width - displayWidth) / 2 + viewState.panX;
-        const imageY = (canvas.height - displayHeight) / 2 + viewState.panY;
-
-        // Convert canvas coords to image pixel coords
-        const imgPixelX = ((canvasX - imageX) / displayWidth) * frameForTools.width;
-        const imgPixelY = ((canvasY - imageY) / displayHeight) * frameForTools.height;
-
-        return { x: imgPixelX, y: imgPixelY };
-    }, [currentFrame, viewState.zoom, viewState.panX, viewState.panY]);
-
-    const handleMouseDown = useCallback((e: React.MouseEvent) => {
-        // Measurement tool (length) takes priority on left click
-        if (viewState.activeTool === 'length' && e.button === 0 && !e.shiftKey && !e.altKey && !e.ctrlKey) {
-
-            // Optional: Pause cine when drawing measurements
-            if (preferences.pauseCineOnMeasure && viewState.isPlaying) {
-                toggleCine();
+            if (imageAspect > canvasAspect) {
+                displayWidth = canvas.width;
+                displayHeight = canvas.width / imageAspect;
+            } else {
+                displayHeight = canvas.height;
+                displayWidth = canvas.height * imageAspect;
             }
 
-            const imgCoords = canvasToImageCoords(e.clientX, e.clientY);
-            if (imgCoords) {
-                measureRef.current = {
-                    startX: imgCoords.x,
-                    startY: imgCoords.y,
-                    endX: imgCoords.x,
-                    endY: imgCoords.y
-                };
-                dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'measure' };
-                // Force immediate overlay redraw so endpoints appear instantly
-                setViewState(prev => ({ ...prev }));
+            displayWidth *= viewState.zoom;
+            displayHeight *= viewState.zoom;
+
+            const imageX = (canvas.width - displayWidth) / 2 + viewState.panX;
+            const imageY = (canvas.height - displayHeight) / 2 + viewState.panY;
+
+            // Convert canvas coords to image pixel coords
+            const imgPixelX = ((canvasX - imageX) / displayWidth) * frameForTools.width;
+            const imgPixelY = ((canvasY - imageY) / displayHeight) * frameForTools.height;
+
+            return { x: imgPixelX, y: imgPixelY };
+        }, [currentFrame, viewState.zoom, viewState.panX, viewState.panY]);
+
+        const handleMouseDown = useCallback((e: React.MouseEvent) => {
+            // Measurement tool (length) takes priority on left click
+            if (viewState.activeTool === 'length' && e.button === 0 && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+
+                // Optional: Pause cine when drawing measurements
+                if (preferences.pauseCineOnMeasure && viewState.isPlaying) {
+                    toggleCine();
+                }
+
+                const imgCoords = canvasToImageCoords(e.clientX, e.clientY);
+                if (imgCoords) {
+                    measureRef.current = {
+                        startX: imgCoords.x,
+                        startY: imgCoords.y,
+                        endX: imgCoords.x,
+                        endY: imgCoords.y
+                    };
+                    dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'measure' };
+                    // Force immediate overlay redraw so endpoints appear instantly
+                    setViewState(prev => ({ ...prev }));
+                }
+                return;
             }
-            return;
-        }
 
-        // Tool-based modes (from keyboard shortcuts)
-        if (viewState.activeTool === 'wl' && e.button === 0) {
-            dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'wl' };
-            return;
-        }
-
-        if (viewState.activeTool === 'zoom' && e.button === 0) {
-            dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'zoom' };
-            return;
-        }
-
-        // Fallback: modifier-based modes (for hand tool or no specific tool)
-        if (e.button === 0 && (e.altKey || e.ctrlKey)) {
-            // Window/Level
-            dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'wl' };
-        } else if (e.button === 2 || (e.button === 0 && e.shiftKey)) {
-            // Window/Level (right click)
-            dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'wl' };
-        } else if (e.button === 0 || e.button === 1) {
-            // Pan
-            dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'pan' };
-        }
-    }, [viewState.activeTool, viewState.isPlaying, preferences.pauseCineOnMeasure, canvasToImageCoords, toggleCine]);
-
-    const handleMouseMove = useCallback((e: React.MouseEvent) => {
-        if (!dragRef.current.mode) return;
-
-        if (dragRef.current.mode === 'measure') {
-            const imgCoords = canvasToImageCoords(e.clientX, e.clientY);
-            if (imgCoords && measureRef.current) {
-                measureRef.current.endX = imgCoords.x;
-                measureRef.current.endY = imgCoords.y;
-                // Force re-render to update measurement line
-                setViewState(prev => ({ ...prev }));
+            // Tool-based modes (from keyboard shortcuts)
+            if (viewState.activeTool === 'wl' && e.button === 0) {
+                dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'wl' };
+                return;
             }
-            return;
-        }
 
-        const dx = e.clientX - dragRef.current.startX;
-        const dy = e.clientY - dragRef.current.startY;
+            if (viewState.activeTool === 'zoom' && e.button === 0) {
+                dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'zoom' };
+                return;
+            }
 
-        if (dragRef.current.mode === 'pan') {
-            setViewState(prev => ({
-                ...prev,
-                panX: prev.panX + dx,
-                panY: prev.panY + dy,
-            }));
-        } else if (dragRef.current.mode === 'wl') {
-            setViewState(prev => ({
-                ...prev,
-                windowCenter: prev.windowCenter + dy,
-                windowWidth: Math.max(1, prev.windowWidth + dx * 2),
-            }));
-        } else if (dragRef.current.mode === 'zoom') {
-            // Zoom via vertical drag: up = zoom in, down = zoom out
-            const zoomDelta = 1 + dy * -0.005;
-            setViewState(prev => ({
-                ...prev,
-                zoom: Math.max(0.1, Math.min(10, prev.zoom * zoomDelta)),
-            }));
-        }
+            // Fallback: modifier-based modes (for hand tool or no specific tool)
+            if (e.button === 0 && (e.altKey || e.ctrlKey)) {
+                // Window/Level
+                dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'wl' };
+            } else if (e.button === 2 || (e.button === 0 && e.shiftKey)) {
+                // Window/Level (right click)
+                dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'wl' };
+            } else if (e.button === 0 || e.button === 1) {
+                // Pan
+                dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'pan' };
+            }
+        }, [viewState.activeTool, viewState.isPlaying, preferences.pauseCineOnMeasure, canvasToImageCoords, toggleCine]);
 
-        dragRef.current.startX = e.clientX;
-        dragRef.current.startY = e.clientY;
-    }, [canvasToImageCoords]);
+        const handleMouseMove = useCallback((e: React.MouseEvent) => {
+            if (!dragRef.current.mode) return;
 
-    const handleMouseUp = useCallback(() => {
-        // Commit measurement if we were drawing one
-        if (dragRef.current.mode === 'measure' && measureRef.current) {
-            const m = measureRef.current;
-            // Only add if it's not a zero-length line
-            const dx = m.endX - m.startX;
-            const dy = m.endY - m.startY;
-            if (Math.sqrt(dx * dx + dy * dy) > 2) {
+            if (dragRef.current.mode === 'measure') {
+                const imgCoords = canvasToImageCoords(e.clientX, e.clientY);
+                if (imgCoords && measureRef.current) {
+                    measureRef.current.endX = imgCoords.x;
+                    measureRef.current.endY = imgCoords.y;
+                    // Force re-render to update measurement line
+                    setViewState(prev => ({ ...prev }));
+                }
+                return;
+            }
+
+            const dx = e.clientX - dragRef.current.startX;
+            const dy = e.clientY - dragRef.current.startY;
+
+            if (dragRef.current.mode === 'pan') {
                 setViewState(prev => ({
                     ...prev,
-                    measurements: [...prev.measurements, {
-                        id: crypto.randomUUID(),
-                        startX: m.startX,
-                        startY: m.startY,
-                        endX: m.endX,
-                        endY: m.endY
-                    }]
+                    panX: prev.panX + dx,
+                    panY: prev.panY + dy,
+                }));
+            } else if (dragRef.current.mode === 'wl') {
+                setViewState(prev => ({
+                    ...prev,
+                    windowCenter: prev.windowCenter + dy,
+                    windowWidth: Math.max(1, prev.windowWidth + dx * 2),
+                }));
+            } else if (dragRef.current.mode === 'zoom') {
+                // Zoom via vertical drag: up = zoom in, down = zoom out
+                const zoomDelta = 1 + dy * -0.005;
+                setViewState(prev => ({
+                    ...prev,
+                    zoom: Math.max(0.1, Math.min(10, prev.zoom * zoomDelta)),
                 }));
             }
-            measureRef.current = null;
-        }
-        dragRef.current.mode = null;
-    }, []);
 
-    const handleContextMenu = useCallback((e: React.MouseEvent) => {
-        e.preventDefault();
-    }, []);
+            dragRef.current.startX = e.clientX;
+            dragRef.current.startY = e.clientY;
+        }, [canvasToImageCoords]);
 
-    // Geometry trust computed from series.geometryTrust
+        const handleMouseUp = useCallback(() => {
+            // Commit measurement if we were drawing one
+            if (dragRef.current.mode === 'measure' && measureRef.current) {
+                const m = measureRef.current;
+                // Only add if it's not a zero-length line
+                const dx = m.endX - m.startX;
+                const dy = m.endY - m.startY;
+                if (Math.sqrt(dx * dx + dy * dy) > 2) {
+                    setViewState(prev => ({
+                        ...prev,
+                        measurements: [...prev.measurements, {
+                            id: crypto.randomUUID(),
+                            startX: m.startX,
+                            startY: m.startY,
+                            endX: m.endX,
+                            endY: m.endY
+                        }]
+                    }));
+                }
+                measureRef.current = null;
+            }
+            dragRef.current.mode = null;
+        }, []);
 
-    return (
-        <div className="dicom-viewer">
-            <div className="dicom-viewer__toolbar">
-                <div className="dicom-viewer__info">
-                    <span className="dicom-viewer__modality">{series.modality}</span>
-                    <span className="dicom-viewer__description">{series.description}</span>
-                    <span
-                        className="dicom-viewer__trust"
-                        style={{ opacity: 0.8, fontSize: '0.85em', cursor: 'help' }}
-                        title={series.geometryTrustInfo?.reasons.join('\n') || (series.geometryTrust === 'untrusted' ? 'Sorted by Instance Number (Fallback)' : 'Sorted by IPP')}
-                    >
-                        {series.geometryTrust === 'verified' && '🟢 Spatial Verified'}
-                        {series.geometryTrust === 'trusted' && '⚠️ Spatial (Irregular)'}
-                        {series.geometryTrust === 'untrusted' && '🔢 Instance Order'}
-                        {(series.geometryTrust === 'unknown' || !series.geometryTrust) && '❓ Unknown Order'}
-                    </span>
-                </div>
-                <div className="dicom-viewer__controls">
-                    <button
-                        onClick={() => setViewState(prev => ({ ...prev, activeTool: 'hand' }))}
-                        title="Hand Tool (H) - Pan/Window/Level"
-                        style={{
-                            fontWeight: viewState.activeTool === 'hand' ? 'bold' : 'normal',
-                            background: viewState.activeTool === 'hand' ? 'var(--color-surface-hover)' : undefined,
-                            borderColor: viewState.activeTool === 'hand' ? 'var(--color-primary)' : undefined
-                        }}
-                    >
-                        ✋
-                    </button>
-                    <button
-                        onClick={() => setViewState(prev => ({ ...prev, activeTool: 'length' }))}
-                        title="Length Tool (M) - Measure Distance"
-                        style={{
-                            fontWeight: viewState.activeTool === 'length' ? 'bold' : 'normal',
-                            background: viewState.activeTool === 'length' ? 'var(--color-surface-hover)' : undefined,
-                            borderColor: viewState.activeTool === 'length' ? 'var(--color-primary)' : undefined
-                        }}
-                    >
-                        📏
-                    </button>
-                    {viewState.activeTool === 'length' && (
+        const handleContextMenu = useCallback((e: React.MouseEvent) => {
+            e.preventDefault();
+        }, []);
+
+        // Geometry trust computed from series.geometryTrust
+
+        return (
+            <div className="dicom-viewer">
+                <div className="dicom-viewer__toolbar">
+                    <div className="dicom-viewer__info">
+                        <span className="dicom-viewer__modality">{series.modality}</span>
+                        <span className="dicom-viewer__description">{series.description}</span>
+                        <span
+                            className="dicom-viewer__trust"
+                            style={{ opacity: 0.8, fontSize: '0.85em', cursor: 'help' }}
+                            title={series.geometryTrustInfo?.reasons.join('\n') || (series.geometryTrust === 'untrusted' ? 'Sorted by Instance Number (Fallback)' : 'Sorted by IPP')}
+                        >
+                            {series.geometryTrust === 'verified' && '🟢 Spatial Verified'}
+                            {series.geometryTrust === 'trusted' && '⚠️ Spatial (Irregular)'}
+                            {series.geometryTrust === 'untrusted' && '🔢 Instance Order'}
+                            {(series.geometryTrust === 'unknown' || !series.geometryTrust) && '❓ Unknown Order'}
+                        </span>
+                    </div>
+                    <div className="dicom-viewer__controls">
                         <button
-                            onClick={() => dispatch({
-                                type: 'SET_PREFERENCE',
-                                key: 'pauseCineOnMeasure',
-                                value: !preferences.pauseCineOnMeasure
-                            })}
-                            title={`Pause cine while dragging: ${preferences.pauseCineOnMeasure ? 'ON' : 'OFF'}`}
+                            onClick={() => setViewState(prev => ({ ...prev, activeTool: 'hand' }))}
+                            title="Hand Tool (H) - Pan/Window/Level"
                             style={{
-                                opacity: preferences.pauseCineOnMeasure ? 1 : 0.3,
-                                fontSize: '0.9em',
-                                width: '24px',
-                                marginLeft: '2px',
-                                marginRight: '4px',
-                                color: preferences.pauseCineOnMeasure ? '#fc4' : 'inherit'
+                                fontWeight: viewState.activeTool === 'hand' ? 'bold' : 'normal',
+                                background: viewState.activeTool === 'hand' ? 'var(--color-surface-hover)' : undefined,
+                                borderColor: viewState.activeTool === 'hand' ? 'var(--color-primary)' : undefined
                             }}
                         >
-                            ⏸
+                            ✋
                         </button>
-                    )}
-                    <button
-                        onClick={toggleCine}
-                        disabled={!canCine}
-                        title={canCine ? 'Toggle cine (Space)' : `Cine disabled: ${cineReason || 'Not eligible'}`}
-                        style={{ opacity: canCine ? 1 : 0.5 }}
-                    >
-                        {viewState.isPlaying ? '⏸' : '▶'}
-                    </button>
-                    <button
-                        onClick={() => dispatch({
-                            type: 'UPDATE_SERIES_PREF',
-                            seriesKey,
-                            prefKey: 'stackReverse',
-                            value: !stackReverse
-                        })}
-                        title={`Stack Direction: ${stackReverse ? 'Reverse' : 'Normal'} (Persisted)`}
-                        style={{ color: stackReverse ? '#fc4' : 'inherit', fontSize: '1.1em' }}
-                    >
-                        ⇅
-                    </button>
-                    <button onClick={() => setViewState(prev => ({ ...prev, invert: !prev.invert }))} title="Invert (I)">
-                        ◐
-                    </button>
-                    <button onClick={() => setViewState({ ...DEFAULT_STATE, windowCenter: currentFrame?.windowCenter ?? 40, windowWidth: currentFrame?.windowWidth ?? 400 })} title="Reset (R)">
-                        ↺
-                    </button>
-                    {viewState.measurements.length > 0 && (
                         <button
-                            onClick={() => setViewState(prev => ({ ...prev, measurements: [] }))}
-                            title="Clear all measurements"
-                            style={{ color: '#f66' }}
+                            onClick={() => setViewState(prev => ({ ...prev, activeTool: 'length' }))}
+                            title="Length Tool (M) - Measure Distance"
+                            style={{
+                                fontWeight: viewState.activeTool === 'length' ? 'bold' : 'normal',
+                                background: viewState.activeTool === 'length' ? 'var(--color-surface-hover)' : undefined,
+                                borderColor: viewState.activeTool === 'length' ? 'var(--color-primary)' : undefined
+                            }}
                         >
-                            🗑
+                            📏
                         </button>
-                    )}
-                </div>
-            </div>
-
-            <div
-                ref={containerRef}
-                className="dicom-viewer__canvas-container"
-                data-tool={viewState.activeTool}
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseUp}
-                onContextMenu={handleContextMenu}
-            >
-                <canvas ref={canvasRef} className="dicom-viewer__canvas" />
-
-                {(missingPermission || waitingForFiles) && (
-                    <div style={{
-                        position: 'absolute',
-                        top: 0, left: 0, right: 0, bottom: 0,
-                        display: 'flex', flexDirection: 'column',
-                        alignItems: 'center', justifyContent: 'center',
-                        background: 'rgba(0,0,0,0.8)', color: 'white',
-                        zIndex: 10
-                    }}>
-                        {missingPermission ? (
-                            <>
-                                <h3>⚠️ Permission Required</h3>
-                                <p>Browser requires gesture to read files.</p>
-                                <p style={{ fontSize: '0.9em', opacity: 0.8 }}>Please re-open the folder.</p>
-                            </>
-                        ) : (
-                            <>
-                                <div className="dicom-viewer__spinner" />
-                                <h3>Loading Files...</h3>
-                                <p>Waiting for scanner...</p>
-                            </>
+                        {viewState.activeTool === 'length' && (
+                            <button
+                                onClick={() => dispatch({
+                                    type: 'SET_PREFERENCE',
+                                    key: 'pauseCineOnMeasure',
+                                    value: !preferences.pauseCineOnMeasure
+                                })}
+                                title={`Pause cine while dragging: ${preferences.pauseCineOnMeasure ? 'ON' : 'OFF'}`}
+                                style={{
+                                    opacity: preferences.pauseCineOnMeasure ? 1 : 0.3,
+                                    fontSize: '0.9em',
+                                    width: '24px',
+                                    marginLeft: '2px',
+                                    marginRight: '4px',
+                                    color: preferences.pauseCineOnMeasure ? '#fc4' : 'inherit'
+                                }}
+                            >
+                                ⏸
+                            </button>
+                        )}
+                        <button
+                            onClick={toggleCine}
+                            disabled={!canCine}
+                            title={canCine ? 'Toggle cine (Space)' : `Cine disabled: ${cineReason || 'Not eligible'}`}
+                            style={{ opacity: canCine ? 1 : 0.5 }}
+                        >
+                            {viewState.isPlaying ? '⏸' : '▶'}
+                        </button>
+                        <button
+                            onClick={() => dispatch({
+                                type: 'UPDATE_SERIES_PREF',
+                                seriesKey,
+                                prefKey: 'stackReverse',
+                                value: !stackReverse
+                            })}
+                            title={`Stack Direction: ${stackReverse ? 'Reverse' : 'Normal'} (Persisted)`}
+                            style={{ color: stackReverse ? '#fc4' : 'inherit', fontSize: '1.1em' }}
+                        >
+                            ⇅
+                        </button>
+                        <button onClick={() => setViewState(prev => ({ ...prev, invert: !prev.invert }))} title="Invert (I)">
+                            ◐
+                        </button>
+                        <button onClick={() => setViewState({ ...DEFAULT_STATE, windowCenter: currentFrame?.windowCenter ?? 40, windowWidth: currentFrame?.windowWidth ?? 400 })} title="Reset (R)">
+                            ↺
+                        </button>
+                        {viewState.measurements.length > 0 && (
+                            <button
+                                onClick={() => setViewState(prev => ({ ...prev, measurements: [] }))}
+                                title="Clear all measurements"
+                                style={{ color: '#f66' }}
+                            >
+                                🗑
+                            </button>
                         )}
                     </div>
-                )}
-            </div>
+                </div>
 
-            <div className="dicom-viewer__status">
-                <span>Frame: {viewState.frameIndex + 1}/{instances.length}</span>
-                <span>WC/WW: {Math.round(viewState.windowCenter)}/{Math.round(viewState.windowWidth)}</span>
-                <span>Zoom: {Math.round(viewState.zoom * 100)}%</span>
-                {viewState.isPlaying && <span className="dicom-viewer__cine">▶ CINE</span>}
-                {isBuffering && <span className="dicom-viewer__buffering" title="Displaying previous frame while decoding">⏳</span>}
+                <div
+                    ref={containerRef}
+                    className="dicom-viewer__canvas-container"
+                    data-tool={viewState.activeTool}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onMouseLeave={handleMouseUp}
+                    onContextMenu={handleContextMenu}
+                >
+                    <canvas ref={canvasRef} className="dicom-viewer__canvas" />
+
+                    {(missingPermission || waitingForFiles) && (
+                        <div style={{
+                            position: 'absolute',
+                            top: 0, left: 0, right: 0, bottom: 0,
+                            display: 'flex', flexDirection: 'column',
+                            alignItems: 'center', justifyContent: 'center',
+                            background: 'rgba(0,0,0,0.8)', color: 'white',
+                            zIndex: 10
+                        }}>
+                            {missingPermission ? (
+                                <>
+                                    <h3>⚠️ Permission Required</h3>
+                                    <p>Browser requires gesture to read files.</p>
+                                    <p style={{ fontSize: '0.9em', opacity: 0.8 }}>Please re-open the folder.</p>
+                                </>
+                            ) : (
+                                <>
+                                    <div className="dicom-viewer__spinner" />
+                                    <h3>Loading Files...</h3>
+                                    <p>Waiting for scanner...</p>
+                                </>
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                <div className="dicom-viewer__status">
+                    <span>Frame: {viewState.frameIndex + 1}/{instances.length}</span>
+                    <span>WC/WW: {Math.round(viewState.windowCenter)}/{Math.round(viewState.windowWidth)}</span>
+                    <span>Zoom: {Math.round(viewState.zoom * 100)}%</span>
+                    {viewState.isPlaying && <span className="dicom-viewer__cine">▶ CINE</span>}
+                    {isBuffering && <span className="dicom-viewer__buffering" title="Displaying previous frame while decoding">⏳</span>}
+                </div>
             </div>
-        </div>
-    );
-}
+        );
+    }
+);
 
 
 

@@ -2,11 +2,12 @@
  * MultiViewport - Container for 1/2/4 viewport layouts
  */
 
-import { useCallback } from 'react';
+import { useCallback, useRef, useEffect } from 'react';
 import { useAppState, useAppDispatch } from '../state/store';
 import { getFlag } from '../core/featureFlags';
-import { DicomViewer } from './Viewport';
+import { DicomViewer, type DicomViewerHandle } from './Viewport';
 import { getVisibleSlots, computeSmartHanging, type ViewportLayout, type ViewportSlotId } from '../core/viewportModel';
+import { mapKeyToAction } from '../core/shortcuts';
 import './MultiViewport.css';
 
 export function MultiViewport() {
@@ -14,8 +15,13 @@ export function MultiViewport() {
     const { layoutState, fileRegistry, studies } = useAppState();
     const dispatch = useAppDispatch();
 
-    const { layout, slots, hangingApplied, undoState } = layoutState;
+    const { layout, slots, hangingApplied, undoState, activeSlotId } = layoutState;
     const visibleSlots = getVisibleSlots(layout);
+
+    // Refs to DicomViewer instances for imperative action routing
+    const viewerRefs = useRef<Record<ViewportSlotId, DicomViewerHandle | null>>({
+        0: null, 1: null, 2: null, 3: null
+    });
 
     // Handle layout change
     const handleSetLayout = useCallback((newLayout: ViewportLayout) => {
@@ -50,6 +56,60 @@ export function MultiViewport() {
     const handleDismissBanner = useCallback(() => {
         dispatch({ type: 'CLEAR_HANGING_BANNER' });
     }, [dispatch]);
+
+    // Global keyboard handler for slot focus and action routing
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // Ignore if target is input/textarea/contenteditable
+            const target = e.target as HTMLElement;
+            if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+                return;
+            }
+
+            // Slot focus keys: 1/2/3/4 (no modifiers)
+            if (!e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+                const slotNum = parseInt(e.key, 10);
+                if (slotNum >= 1 && slotNum <= 4) {
+                    const targetSlotId = (slotNum - 1) as ViewportSlotId;
+                    // Only focus if slot is visible in current layout
+                    if (visibleSlots.includes(targetSlotId)) {
+                        e.preventDefault();
+                        dispatch({ type: 'SET_ACTIVE_SLOT', slotId: targetSlotId });
+                        return;
+                    }
+                }
+            }
+
+            // Tab / Shift+Tab: cycle through visible slots
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                const currentIndex = visibleSlots.indexOf(activeSlotId);
+                let nextIndex: number;
+                if (e.shiftKey) {
+                    // Shift+Tab: go backwards, wrap around
+                    nextIndex = (currentIndex - 1 + visibleSlots.length) % visibleSlots.length;
+                } else {
+                    // Tab: go forwards, wrap around
+                    nextIndex = (currentIndex + 1) % visibleSlots.length;
+                }
+                dispatch({ type: 'SET_ACTIVE_SLOT', slotId: visibleSlots[nextIndex] });
+                return;
+            }
+
+            // Route other shortcuts to active viewport
+            const action = mapKeyToAction(e);
+            if (action) {
+                e.preventDefault();
+                const activeViewer = viewerRefs.current[activeSlotId];
+                if (activeViewer) {
+                    activeViewer.applyAction(action);
+                }
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [visibleSlots, activeSlotId, dispatch]);
 
     if (!viewerEnabled) {
         return (
@@ -129,6 +189,7 @@ export function MultiViewport() {
                             {slot.series ? (
                                 <DicomViewer
                                     key={`slot-${slotId}`}
+                                    ref={(handle) => { viewerRefs.current[slotId] = handle; }}
                                     series={slot.series}
                                     fileRegistry={fileRegistry}
                                 />
