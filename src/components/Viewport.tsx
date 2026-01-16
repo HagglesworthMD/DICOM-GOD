@@ -20,7 +20,7 @@ import type { Series, Instance, DecodedFrame, ViewportState, FileRegistry } from
 import './Viewport.css';
 import type { ShortcutAction } from '../core/shortcuts';
 import { calculateNextFrame } from '../core/viewOps';
-import { PRESET_LIST, formatWl } from '../core/wlPresets';
+import { PRESET_LIST, formatWl, getPresetById } from '../core/wlPresets';
 import { resolveFrameAuthority } from '../core/frameAuthority';
 
 /** Imperative handle exposed by DicomViewer for external action routing */
@@ -554,7 +554,8 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     canCine,
                     isBuffering: isFallback,
                     cineReason
-                }
+                },
+                activePresetName: viewState.activePreset ? getPresetById(viewState.activePreset)?.label : undefined
             });
         }, [currentFrame, viewState, loading, error, isUnsupported, instances.length, currentInstance, series.geometryTrustInfo, canCine, cineReason]);
 

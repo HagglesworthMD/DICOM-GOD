@@ -178,6 +178,7 @@ export function drawOverlay(
             isBuffering?: boolean;
             cineReason?: string;
         };
+        activePresetName?: string;
     }
 ): void {
     const ctx = canvas.getContext('2d');
@@ -215,16 +216,39 @@ export function drawOverlay(
     ctx.fillStyle = cineColor;
     ctx.fillText(frameText, padding * 2, padding + 14);
 
-    // Top-right: Window info
+    // Top-right: Window info (WL + Preset)
+    let presetText = null;
+    if (info.activePresetName) {
+        presetText = `WL: ${info.activePresetName}`;
+    }
+
     const wcText = `WC: ${Math.round(info.windowCenter)}`;
     const wwText = `WW: ${Math.round(info.windowWidth)}`;
-    const windowWidth = Math.max(ctx.measureText(wcText).width, ctx.measureText(wwText).width) + padding * 2;
+
+    // Calculate width needed
+    const maxWidth = Math.max(
+        ctx.measureText(wcText).width,
+        ctx.measureText(wwText).width,
+        presetText ? ctx.measureText(presetText).width : 0
+    );
+    const windowWidth = maxWidth + padding * 2;
+    const windowHeight = presetText ? 60 : 40;
 
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-    ctx.fillRect(canvas.width - windowWidth - padding, padding, windowWidth, 40);
+    ctx.fillRect(canvas.width - windowWidth - padding, padding, windowWidth, windowHeight);
+
     ctx.fillStyle = '#fff';
-    ctx.fillText(wcText, canvas.width - windowWidth, padding + 14);
-    ctx.fillText(wwText, canvas.width - windowWidth, padding + 28);
+
+    let y = padding + 14;
+    if (presetText) {
+        ctx.fillStyle = '#0f0'; // Active preset in green
+        ctx.fillText(presetText, canvas.width - windowWidth, y);
+        ctx.fillStyle = '#fff'; // Reset for numbers
+        y += 14;
+    }
+
+    ctx.fillText(wcText, canvas.width - windowWidth, y);
+    ctx.fillText(wwText, canvas.width - windowWidth, y + 14);
 
     // Bottom-left: Zoom + Spacing source
     let bottomLeftText = `Zoom: ${Math.round(info.zoom * 100)}%`;

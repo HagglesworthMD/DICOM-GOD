@@ -29,6 +29,7 @@ import {
 } from '../core/viewerState';
 import type { FileEntry, AppError, FileRegistry } from '../core/types';
 import type { ViewportSlotId } from '../core/viewportModel';
+import { PRESET_LIST } from '../core/wlPresets';
 import '../styles/app.css';
 
 const log = createLogger('App');
@@ -317,6 +318,31 @@ function AppContent() {
                         <Button variant="ghost" size="sm" onClick={handleImportState} title="Import viewer state from JSON">
                             <Icon name="upload" size={18} />
                         </Button>
+
+                        <select
+                            className="app__preset-select"
+                            onChange={(e) => {
+                                const key = e.target.value;
+                                if (!key) return;
+                                window.dispatchEvent(new KeyboardEvent('keydown', { key: key, bubbles: true }));
+                                e.target.value = '';
+                            }}
+                            title="Apply Window/Level Preset (Active Viewport)"
+                            style={{
+                                marginLeft: '8px',
+                                padding: '4px',
+                                borderRadius: '4px',
+                                background: 'var(--color-bg-tertiary)',
+                                color: 'var(--color-text-primary)',
+                                border: '1px solid var(--color-border)'
+                            }}
+                        >
+                            <option value="">WL Preset...</option>
+                            {PRESET_LIST.map(p => (
+                                <option key={p.id} value={p.shortcut}>{p.name}</option>
+                            ))}
+                            <option value="F6">Default</option>
+                        </select>
 
                         <Button variant="ghost" size="sm" onClick={handleShowShortcuts} title="Keyboard shortcuts (?)">
                             <Icon name="keyboard" size={18} />
