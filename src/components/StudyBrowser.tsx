@@ -16,7 +16,7 @@ function formatDate(dateStr?: string): string {
 interface StudyItemProps {
     study: Study;
     selectedSeriesUid: string | null;
-    onSelectSeries: (series: Series) => void;
+    onSelectSeries: (series: Series, event: React.MouseEvent) => void;
 }
 
 function StudyItem({ study, selectedSeriesUid, onSelectSeries }: StudyItemProps) {
@@ -52,7 +52,7 @@ function StudyItem({ study, selectedSeriesUid, onSelectSeries }: StudyItemProps)
                             key={series.seriesInstanceUid}
                             series={series}
                             isSelected={series.seriesInstanceUid === selectedSeriesUid}
-                            onSelect={() => onSelectSeries(series)}
+                            onSelect={(e) => onSelectSeries(series, e)}
                         />
                     ))}
                 </ul>
@@ -64,7 +64,7 @@ function StudyItem({ study, selectedSeriesUid, onSelectSeries }: StudyItemProps)
 interface SeriesItemProps {
     series: Series;
     isSelected: boolean;
-    onSelect: () => void;
+    onSelect: (event: React.MouseEvent) => void;
 }
 
 /** Get badge emoji for trust level */
@@ -214,9 +214,24 @@ export function StudyBrowser() {
     const { files, studies, selectedSeries, indexProgress, layoutState } = useAppState();
     const dispatch = useAppDispatch();
 
-    const handleSelectSeries = (series: Series) => {
-        // Assign to active viewport slot
-        dispatch({ type: 'ASSIGN_SERIES_TO_SLOT', slotId: layoutState.activeSlotId, series });
+    const handleSelectSeries = (series: Series, event?: React.MouseEvent) => {
+        const visibleSlots = layoutState.layout === 1 ? [0] : layoutState.layout === 2 ? [0, 1] : [0, 1, 2, 3];
+        let targetSlotId = layoutState.activeSlotId;
+
+        if (event?.altKey && layoutState.hoveredSlotId !== null) {
+            // Alt+click: assign to hovered slot
+            targetSlotId = layoutState.hoveredSlotId;
+        } else if (event?.shiftKey) {
+            // Shift+click: cycle to next visible slot
+            const currentIndex = visibleSlots.indexOf(layoutState.activeSlotId);
+            const nextIndex = (currentIndex + 1) % visibleSlots.length;
+            targetSlotId = visibleSlots[nextIndex] as 0 | 1 | 2 | 3;
+            // Also set active slot to the target
+            dispatch({ type: 'SET_ACTIVE_SLOT', slotId: targetSlotId });
+        }
+
+        // Assign to target viewport slot
+        dispatch({ type: 'ASSIGN_SERIES_TO_SLOT', slotId: targetSlotId, series });
     };
 
     const isLoading = indexProgress &&
