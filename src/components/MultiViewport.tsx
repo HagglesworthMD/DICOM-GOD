@@ -109,6 +109,18 @@ export function MultiViewport() {
             const action = mapKeyToAction(e);
             if (action) {
                 e.preventDefault();
+
+                // Handle global actions first
+                if (action === 'TOGGLE_HELP') {
+                    dispatch({ type: 'SET_SHORTCUTS_VISIBLE', visible: true });
+                    return;
+                }
+                if (action === 'CLOSE_DIALOG') {
+                    dispatch({ type: 'SET_SHORTCUTS_VISIBLE', visible: false });
+                    // Also route to viewport for clearing selection
+                }
+
+                // Route viewport-specific actions
                 const activeViewer = viewerRefs.current[activeSlotId];
                 if (activeViewer) {
                     activeViewer.applyAction(action);

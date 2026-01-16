@@ -1,3 +1,26 @@
+.shortcuts-help {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.shortcuts-help__category {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.shortcuts-help__category-title {
+    margin: 0;
+    padding-bottom: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-muted);
+    border-bottom: 1px solid var(--color-border);
+}
+
 .shortcuts-table {
     width: 100%;
     border-collapse: collapse;
@@ -12,36 +35,27 @@
 }
 
 .shortcuts-table td {
-    padding: 0.625rem 0;
+    padding: 0.5rem 0;
 }
 
 .shortcuts-table__key {
     white-space: nowrap;
     padding-right: 1.5rem;
+    width: 40%;
 }
 
 .shortcuts-table__key kbd {
     display: inline-block;
-    padding: 0.25rem 0.5rem;
+    padding: 0.2rem 0.4rem;
     background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
     font-family: var(--font-mono);
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     color: var(--color-text);
 }
 
 .shortcuts-table__desc {
     color: var(--color-text-secondary);
-    font-size: 0.875rem;
-}
-
-.shortcuts-note {
-    margin: 1rem 0 0;
-    padding: 0.75rem;
-    background: var(--color-surface);
-    border-radius: var(--radius-sm);
-    font-size: 0.75rem;
-    color: var(--color-text-muted);
-    text-align: center;
+    font-size: 0.8125rem;
 }

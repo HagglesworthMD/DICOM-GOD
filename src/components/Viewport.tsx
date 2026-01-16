@@ -797,6 +797,10 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     }
                     break;
                 }
+                case 'CLOSE_DIALOG':
+                    // Reset tool to hand
+                    setViewState(prev => ({ ...prev, activeTool: 'hand' }));
+                    break;
                 case 'TOGGLE_HELP':
                     dispatch({ type: 'SET_SHORTCUTS_VISIBLE', visible: true });
                     break;
