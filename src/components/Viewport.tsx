@@ -960,11 +960,26 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 </div>
                 <div className="dicom-viewer__controls">
                     <button
-                        onClick={() => setViewState(prev => ({ ...prev, activeTool: prev.activeTool === 'hand' ? 'length' : 'hand' }))}
-                        title={viewState.activeTool === 'hand' ? 'Hand Tool (H) - Click to switch to Measure' : 'Length Tool (M) - Click to switch to Hand'}
-                        style={{ fontWeight: viewState.activeTool === 'length' ? 'bold' : 'normal' }}
+                        onClick={() => setViewState(prev => ({ ...prev, activeTool: 'hand' }))}
+                        title="Hand Tool (H) - Pan/Window/Level"
+                        style={{
+                            fontWeight: viewState.activeTool === 'hand' ? 'bold' : 'normal',
+                            background: viewState.activeTool === 'hand' ? 'var(--color-surface-hover)' : undefined,
+                            borderColor: viewState.activeTool === 'hand' ? 'var(--color-primary)' : undefined
+                        }}
                     >
-                        {viewState.activeTool === 'hand' ? '✋' : '📏'}
+                        ✋
+                    </button>
+                    <button
+                        onClick={() => setViewState(prev => ({ ...prev, activeTool: 'length' }))}
+                        title="Length Tool (M) - Measure Distance"
+                        style={{
+                            fontWeight: viewState.activeTool === 'length' ? 'bold' : 'normal',
+                            background: viewState.activeTool === 'length' ? 'var(--color-surface-hover)' : undefined,
+                            borderColor: viewState.activeTool === 'length' ? 'var(--color-primary)' : undefined
+                        }}
+                    >
+                        📏
                     </button>
                     {viewState.activeTool === 'length' && (
                         <button
