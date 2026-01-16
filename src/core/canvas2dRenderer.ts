@@ -198,7 +198,7 @@ export function drawOverlay(
     if (info.cineInfo) {
         if (info.cineInfo.isPlaying) {
             if (info.cineInfo.isBuffering) {
-                frameText += ` ⏳ buffering`;
+                frameText += ` ⏳ buffering (hold)`;
                 cineColor = '#ff4'; // Yellow when buffering
             } else {
                 frameText += ` ▶ CINE ${info.cineInfo.fps}fps`;
