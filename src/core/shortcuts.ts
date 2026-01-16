@@ -16,10 +16,12 @@ export type ShortcutAction =
     | 'WL_TOOL'
     | 'ZOOM_TOOL'
     | 'MEASURE_TOOL'
-    | 'PRESET_1'
-    | 'PRESET_2'
-    | 'PRESET_3'
-    | 'PRESET_4'
+    | 'WL_PRESET_1'
+    | 'WL_PRESET_2'
+    | 'WL_PRESET_3'
+    | 'WL_PRESET_4'
+    | 'WL_PRESET_5'
+    | 'WL_DICOM_DEFAULT'
     | 'TOGGLE_CINE'
     | 'TOGGLE_HELP'
     | 'CLOSE_DIALOG'
@@ -55,7 +57,8 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     // View
     { key: 'R', description: 'Reset view', category: 'view' },
     { key: 'I', description: 'Invert grayscale', category: 'view' },
-    { key: '1-4', description: 'Window presets (single viewport)', category: 'view' },
+    { key: 'F1-F5', description: 'WL presets (Soft/Lung/Bone/Brain/Abdo)', category: 'view' },
+    { key: 'F6', description: 'DICOM default WL', category: 'view' },
 
     // Layout
     { key: '1 / 2 / 3 / 4', description: 'Select viewport slot', category: 'layout' },
@@ -116,12 +119,13 @@ export function mapKeyToAction(e: KeyboardEvent): ShortcutAction {
 
         case '?': return 'TOGGLE_HELP';
 
-        // Note: 1-4 handled separately in MultiViewport for slot selection
-        // Presets are triggered in single viewport mode only
-        case '1': return 'PRESET_1';
-        case '2': return 'PRESET_2';
-        case '3': return 'PRESET_3';
-        case '4': return 'PRESET_4';
+        // WL presets via function keys (avoids conflict with slot selection)
+        case 'F1': return 'WL_PRESET_1';
+        case 'F2': return 'WL_PRESET_2';
+        case 'F3': return 'WL_PRESET_3';
+        case 'F4': return 'WL_PRESET_4';
+        case 'F5': return 'WL_PRESET_5';
+        case 'F6': return 'WL_DICOM_DEFAULT';
     }
 
     return null;

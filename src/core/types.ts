@@ -197,6 +197,8 @@ export interface ViewportState {
     activeTool: ViewportTool;
     /** Measurements (image pixel coords) */
     measurements: LengthMeasurement[];
+    /** Active WL preset ID (optional for display) */
+    activePreset?: string;
 }
 
 /** Available viewport tools */

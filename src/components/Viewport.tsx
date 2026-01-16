@@ -19,7 +19,8 @@ import { isTransferSyntaxSupported } from '../core/types';
 import type { Series, Instance, DecodedFrame, ViewportState, FileRegistry } from '../core/types';
 import './Viewport.css';
 import type { ShortcutAction } from '../core/shortcuts';
-import { calculateNextFrame, getPreset } from '../core/viewOps';
+import { calculateNextFrame } from '../core/viewOps';
+import { PRESET_LIST, formatWl } from '../core/wlPresets';
 import { resolveFrameAuthority } from '../core/frameAuthority';
 
 /** Imperative handle exposed by DicomViewer for external action routing */
@@ -785,16 +786,35 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 case 'MEASURE_TOOL':
                     setViewState(prev => ({ ...prev, activeTool: 'length' }));
                     break;
-                case 'PRESET_1':
-                case 'PRESET_2':
-                case 'PRESET_3':
-                case 'PRESET_4': {
-                    const key = action.split('_')[1];
-                    const preset = getPreset(key);
+                case 'WL_PRESET_1':
+                case 'WL_PRESET_2':
+                case 'WL_PRESET_3':
+                case 'WL_PRESET_4':
+                case 'WL_PRESET_5': {
+                    const index = parseInt(action.split('_')[2], 10) - 1;
+                    const preset = PRESET_LIST[index];
                     if (preset) {
-                        setViewState(prev => ({ ...prev, windowCenter: preset.wc, windowWidth: preset.ww }));
-                        dispatch({ type: 'SET_STATUS', message: `Preset: ${preset.label} (WC: ${preset.wc}, WW: ${preset.ww})` });
+                        setViewState(prev => ({
+                            ...prev,
+                            windowCenter: preset.wc,
+                            windowWidth: preset.ww,
+                            activePreset: preset.id,
+                        }));
+                        dispatch({ type: 'SET_STATUS', message: `WL: ${preset.name} (${formatWl(preset.wc, preset.ww)})` });
                     }
+                    break;
+                }
+                case 'WL_DICOM_DEFAULT': {
+                    // Reset to DICOM-provided values
+                    const dicomWc = currentFrame?.windowCenter ?? 40;
+                    const dicomWw = currentFrame?.windowWidth ?? 400;
+                    setViewState(prev => ({
+                        ...prev,
+                        windowCenter: dicomWc,
+                        windowWidth: dicomWw,
+                        activePreset: 'dicom_default',
+                    }));
+                    dispatch({ type: 'SET_STATUS', message: `WL: DICOM Default (${formatWl(dicomWc, dicomWw)})` });
                     break;
                 }
                 case 'CLOSE_DIALOG':

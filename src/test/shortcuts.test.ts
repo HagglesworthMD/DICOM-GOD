@@ -76,11 +76,13 @@ describe('shortcuts', () => {
             expect(mapKeyToAction(e)).toBe('TOGGLE_HELP');
         });
 
-        it('maps 1-4 to PRESET_1-4', () => {
-            expect(mapKeyToAction(createEvent('1'))).toBe('PRESET_1');
-            expect(mapKeyToAction(createEvent('2'))).toBe('PRESET_2');
-            expect(mapKeyToAction(createEvent('3'))).toBe('PRESET_3');
-            expect(mapKeyToAction(createEvent('4'))).toBe('PRESET_4');
+        it('maps F1-F6 to WL presets', () => {
+            expect(mapKeyToAction(createEvent('F1'))).toBe('WL_PRESET_1');
+            expect(mapKeyToAction(createEvent('F2'))).toBe('WL_PRESET_2');
+            expect(mapKeyToAction(createEvent('F3'))).toBe('WL_PRESET_3');
+            expect(mapKeyToAction(createEvent('F4'))).toBe('WL_PRESET_4');
+            expect(mapKeyToAction(createEvent('F5'))).toBe('WL_PRESET_5');
+            expect(mapKeyToAction(createEvent('F6'))).toBe('WL_DICOM_DEFAULT');
         });
 
         it('ignores input elements', () => {
@@ -108,7 +110,7 @@ describe('shortcuts', () => {
 
         it('returns null for unmapped keys', () => {
             expect(mapKeyToAction(createEvent('x'))).toBeNull();
-            expect(mapKeyToAction(createEvent('F1'))).toBeNull();
+            expect(mapKeyToAction(createEvent('F7'))).toBeNull();
         });
     });
 
