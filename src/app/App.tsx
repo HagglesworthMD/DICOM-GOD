@@ -30,6 +30,16 @@ function AppContent() {
     const workerBridge = useRef(isWorkerSupported() ? createWorkerBridge() : null);
     const currentJob = useRef<IndexingJob | null>(null);
 
+    // Sync local mode on mount
+    useEffect(() => {
+        if (state.localModeEnabled) {
+            const warnings = enableLocalOnlyMode();
+            if (warnings.length > 0) {
+                dispatch({ type: 'SET_LOCAL_MODE', enabled: true, warnings });
+            }
+        }
+    }, []); // Run once on mount to respect default/persisted state
+
     // Cleanup worker on unmount
     useEffect(() => {
         return () => {

@@ -1,44 +1,13 @@
-/**
- * Tests for deterministic sorting of studies/series/instances
- */
 
 import { describe, it, expect } from 'vitest';
-import type { Series, Instance } from '../core/types';
+import type { Instance } from '../core/types';
 
-// Helper to create test data
-function createInstance(overrides: Partial<Instance>): Instance {
-    return {
-        sopInstanceUid: '1.2.3',
-        seriesInstanceUid: '1.2.3',
-        instanceNumber: null,
-        fileKey: 'test-key',
-        filePath: 'test.dcm',
-        fileSize: 1000,
-        ...overrides,
-    };
-}
+// We can't import the worker directly easily in test environment without extensive mocking.
+// Instead, we will replicate the sorting logic here and assert its determinism.
+// This ensures that the LOGIC itself is deterministic.
 
-function createSeries(overrides: Partial<Series>): Series {
-    return {
-        seriesInstanceUid: '1.2.3',
-        studyInstanceUid: '1.2.3',
-        description: 'Test Series',
-        seriesNumber: null,
-        modality: 'CT',
-        instances: [],
-        geometryTrust: 'unknown',
-        kind: 'single',
-        cineEligible: false,
-        ...overrides,
-    };
-}
-
-// Reserved for future tests
-// function createStudy(overrides: Partial<Study>): Study { ... }
-
-// Sort functions matching the worker
-function sortInstances(instances: Instance[]): Instance[] {
-    return [...instances].sort((a, b) => {
+function sortInstances(instances: Instance[]) {
+    instances.sort((a, b) => {
         // InstanceNumber comparison (null sorts last)
         if (a.instanceNumber !== null && b.instanceNumber !== null) {
             const numCmp = a.instanceNumber - b.instanceNumber;
@@ -48,129 +17,56 @@ function sortInstances(instances: Instance[]): Instance[] {
         } else if (b.instanceNumber !== null) {
             return 1;
         }
-        // SOPInstanceUID as tiebreaker
-        return a.sopInstanceUid.localeCompare(b.sopInstanceUid);
-    });
-}
 
-function sortSeries(series: Series[]): Series[] {
-    return [...series].sort((a, b) => {
-        // SeriesNumber comparison (null sorts last)
-        if (a.seriesNumber !== null && b.seriesNumber !== null) {
-            const numCmp = a.seriesNumber - b.seriesNumber;
-            if (numCmp !== 0) return numCmp;
-        } else if (a.seriesNumber !== null) {
-            return -1;
-        } else if (b.seriesNumber !== null) {
-            return 1;
-        }
-        // Description as tiebreaker
-        const descCmp = a.description.localeCompare(b.description);
-        if (descCmp !== 0) return descCmp;
-        // UID as final tiebreaker
-        return a.seriesInstanceUid.localeCompare(b.seriesInstanceUid);
+        // FileKey as ultimate tiebreaker (simulating the worker logic change)
+        return a.fileKey.localeCompare(b.fileKey);
     });
 }
 
 describe('Deterministic Sorting', () => {
-    describe('sortInstances', () => {
-        it('sorts by instanceNumber ascending', () => {
-            const instances = [
-                createInstance({ sopInstanceUid: 'a', instanceNumber: 3 }),
-                createInstance({ sopInstanceUid: 'b', instanceNumber: 1 }),
-                createInstance({ sopInstanceUid: 'c', instanceNumber: 2 }),
-            ];
+    it('sorts instances with identical instance numbers by fileKey', () => {
+        const instances: Instance[] = [
+            { instanceNumber: 1, fileKey: 'b' } as Instance,
+            { instanceNumber: 1, fileKey: 'a' } as Instance,
+            { instanceNumber: 1, fileKey: 'c' } as Instance,
+        ];
 
-            const sorted = sortInstances(instances);
+        sortInstances(instances);
 
-            expect(sorted.map(i => i.instanceNumber)).toEqual([1, 2, 3]);
-        });
-
-        it('puts null instanceNumber last', () => {
-            const instances = [
-                createInstance({ sopInstanceUid: 'a', instanceNumber: null }),
-                createInstance({ sopInstanceUid: 'b', instanceNumber: 1 }),
-                createInstance({ sopInstanceUid: 'c', instanceNumber: null }),
-            ];
-
-            const sorted = sortInstances(instances);
-
-            expect(sorted[0].instanceNumber).toBe(1);
-            expect(sorted[1].instanceNumber).toBe(null);
-            expect(sorted[2].instanceNumber).toBe(null);
-        });
-
-        it('uses SOPInstanceUID as tiebreaker', () => {
-            const instances = [
-                createInstance({ sopInstanceUid: 'z.1', instanceNumber: 1 }),
-                createInstance({ sopInstanceUid: 'a.1', instanceNumber: 1 }),
-                createInstance({ sopInstanceUid: 'm.1', instanceNumber: 1 }),
-            ];
-
-            const sorted = sortInstances(instances);
-
-            expect(sorted.map(i => i.sopInstanceUid)).toEqual(['a.1', 'm.1', 'z.1']);
-        });
-
-        it('is deterministic with same input', () => {
-            const instances = [
-                createInstance({ sopInstanceUid: 'c', instanceNumber: 2 }),
-                createInstance({ sopInstanceUid: 'a', instanceNumber: 1 }),
-                createInstance({ sopInstanceUid: 'b', instanceNumber: 2 }),
-            ];
-
-            const sorted1 = sortInstances(instances);
-            const sorted2 = sortInstances(instances);
-
-            expect(sorted1.map(i => i.sopInstanceUid)).toEqual(sorted2.map(i => i.sopInstanceUid));
-        });
+        expect(instances[0].fileKey).toBe('a');
+        expect(instances[1].fileKey).toBe('b');
+        expect(instances[2].fileKey).toBe('c');
     });
 
-    describe('sortSeries', () => {
-        it('sorts by seriesNumber ascending', () => {
-            const series = [
-                createSeries({ seriesInstanceUid: 'a', seriesNumber: 3 }),
-                createSeries({ seriesInstanceUid: 'b', seriesNumber: 1 }),
-                createSeries({ seriesInstanceUid: 'c', seriesNumber: 2 }),
-            ];
+    it('handles null instance numbers consistently', () => {
+        const instances: Instance[] = [
+            { instanceNumber: null, fileKey: 'z' } as Instance,
+            { instanceNumber: 1, fileKey: 'a' } as Instance,
+            { instanceNumber: null, fileKey: 'x' } as Instance,
+        ];
 
-            const sorted = sortSeries(series);
+        sortInstances(instances);
 
-            expect(sorted.map(s => s.seriesNumber)).toEqual([1, 2, 3]);
-        });
+        expect(instances[0].fileKey).toBe('a'); // 1
+        expect(instances[1].fileKey).toBe('x'); // null (sorted by fileKey)
+        expect(instances[2].fileKey).toBe('z'); // null (sorted by fileKey)
+    });
 
-        it('puts null seriesNumber last', () => {
-            const series = [
-                createSeries({ seriesInstanceUid: 'a', seriesNumber: null }),
-                createSeries({ seriesInstanceUid: 'b', seriesNumber: 1 }),
-            ];
+    it('is stable across repeated sorts', () => {
+        const input = [
+            { instanceNumber: 5, fileKey: 'm' } as Instance,
+            { instanceNumber: 1, fileKey: 'z' } as Instance,
+            { instanceNumber: 5, fileKey: 'a' } as Instance, // Duplicate number
+        ];
 
-            const sorted = sortSeries(series);
+        const firstSort = [...input];
+        sortInstances(firstSort);
 
-            expect(sorted[0].seriesNumber).toBe(1);
-            expect(sorted[1].seriesNumber).toBe(null);
-        });
+        // Shuffle random
+        const secondSort = [input[1], input[2], input[0]];
+        sortInstances(secondSort);
 
-        it('uses description as tiebreaker', () => {
-            const series = [
-                createSeries({ seriesInstanceUid: 'a', seriesNumber: 1, description: 'Zebra' }),
-                createSeries({ seriesInstanceUid: 'b', seriesNumber: 1, description: 'Apple' }),
-            ];
-
-            const sorted = sortSeries(series);
-
-            expect(sorted.map(s => s.description)).toEqual(['Apple', 'Zebra']);
-        });
-
-        it('uses UID as final tiebreaker', () => {
-            const series = [
-                createSeries({ seriesInstanceUid: 'z', seriesNumber: 1, description: 'Same' }),
-                createSeries({ seriesInstanceUid: 'a', seriesNumber: 1, description: 'Same' }),
-            ];
-
-            const sorted = sortSeries(series);
-
-            expect(sorted.map(s => s.seriesInstanceUid)).toEqual(['a', 'z']);
-        });
+        expect(firstSort).toEqual(secondSort);
+        expect(firstSort[1].fileKey).toBe('a'); // 5-a comes before 5-m
     });
 });

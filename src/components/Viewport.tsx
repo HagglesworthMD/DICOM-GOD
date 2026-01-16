@@ -114,6 +114,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
     const [viewState, setViewState] = useState<ViewportState>(DEFAULT_STATE);
     const [currentFrame, setCurrentFrame] = useState<DecodedFrame | null>(null);
+    const [isBuffering, setIsBuffering] = useState(false);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [isUnsupported, setIsUnsupported] = useState(false);
@@ -471,7 +472,11 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             lastGoodFrameRef.current = authority.frame;
         }
 
-        const isBuffering = authority.isFallback;
+        const isFallback = authority.isFallback;
+        if (isBuffering !== isFallback) {
+            setIsBuffering(isFallback);
+        }
+
         const frameToRender = authority.frame;
 
         // Handle loading state
@@ -537,7 +542,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 isPlaying: viewState.isPlaying,
                 fps: viewState.cineFrameRate,
                 canCine,
-                isBuffering,
+                isBuffering: isFallback,
                 cineReason
             }
         });
@@ -1062,6 +1067,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 <span>WC/WW: {Math.round(viewState.windowCenter)}/{Math.round(viewState.windowWidth)}</span>
                 <span>Zoom: {Math.round(viewState.zoom * 100)}%</span>
                 {viewState.isPlaying && <span className="dicom-viewer__cine">▶ CINE</span>}
+                {isBuffering && <span className="dicom-viewer__buffering" title="Displaying previous frame while decoding">⏳</span>}
             </div>
         </div>
     );

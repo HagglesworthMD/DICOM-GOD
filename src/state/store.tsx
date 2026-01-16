@@ -75,9 +75,21 @@ export interface AppState {
     preferences: UserPreferences;
 }
 
+// Local mode default: ON
+function getInitialLocalMode(): boolean {
+    if (typeof window === 'undefined') return true;
+    try {
+        const stored = localStorage.getItem('dicom_god_local_mode');
+        if (stored !== null) return stored === 'true';
+        return true; // Default to ON
+    } catch {
+        return true;
+    }
+}
+
 const initialState: AppState = {
     files: [],
-    localModeEnabled: false,
+    localModeEnabled: getInitialLocalMode(),
     localModeWarnings: [],
     errors: [],
     shortcutsHelpVisible: false,
@@ -130,6 +142,11 @@ export function reducer(state: AppState, action: AppAction): AppState {
         case 'CLEAR_FILES':
             return { ...state, files: [] };
         case 'SET_LOCAL_MODE':
+            try {
+                localStorage.setItem('dicom_god_local_mode', String(action.enabled));
+            } catch (e) {
+                console.error('Failed to persist local mode', e);
+            }
             return {
                 ...state,
                 localModeEnabled: action.enabled,

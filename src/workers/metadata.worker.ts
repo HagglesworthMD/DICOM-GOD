@@ -163,6 +163,7 @@ async function handleStartIndex(requestId: string, files: FileEntry[]) {
     });
 
     // Sort studies by date (newest first) then by description
+    // Sort studies by date (newest first) then by description then by UID
     finalStudies.sort((a, b) => {
         if (a.date && b.date) {
             const cmp = b.date.localeCompare(a.date);
@@ -172,7 +173,11 @@ async function handleStartIndex(requestId: string, files: FileEntry[]) {
         } else if (b.date) {
             return 1;
         }
-        return (a.description || '').localeCompare(b.description || '');
+
+        const descCmp = (a.description || '').localeCompare(b.description || '');
+        if (descCmp !== 0) return descCmp;
+
+        return a.studyInstanceUid.localeCompare(b.studyInstanceUid);
     });
 
     progress.phase = 'complete';
@@ -370,10 +375,21 @@ function sortStudyContents(study: Study) {
                     const posB = parseDS(b.imagePositionPatient!)!;
 
                     // Dist = P dot N
+                    // Dist = P dot N
                     const distA = posA[0] * nx + posA[1] * ny + posA[2] * nz;
                     const distB = posB[0] * nx + posB[1] * ny + posB[2] * nz;
 
-                    return distA - distB;
+                    const distDiff = distA - distB;
+                    if (Math.abs(distDiff) > 0.001) return distDiff;
+
+                    // Tie-breaker: Instance Number
+                    if (a.instanceNumber !== null && b.instanceNumber !== null) {
+                        const numDiff = a.instanceNumber - b.instanceNumber;
+                        if (numDiff !== 0) return numDiff;
+                    }
+
+                    // Ultimate Tie-breaker: FileKey (stable string)
+                    return a.fileKey.localeCompare(b.fileKey);
                 });
 
                 // Verify slice spacing consistency
