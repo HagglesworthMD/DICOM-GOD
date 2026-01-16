@@ -29,6 +29,8 @@ export interface LayoutState {
     slots: ViewportSlot[];
     /** Active slot index (receives series selection) */
     activeSlotId: ViewportSlotId;
+    /** Hovered slot index (for Alt+click assignment) */
+    hoveredSlotId: ViewportSlotId | null;
     /** Whether smart hanging was used */
     hangingApplied: boolean;
     /** Previous state for undo */
@@ -54,6 +56,7 @@ export function createInitialLayoutState(): LayoutState {
             { id: 3, series: null, isActive: false },
         ],
         activeSlotId: 0,
+        hoveredSlotId: null,
         hangingApplied: false,
         undoState: null,
     };

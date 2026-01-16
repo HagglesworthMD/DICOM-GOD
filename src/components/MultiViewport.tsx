@@ -15,7 +15,7 @@ export function MultiViewport() {
     const { layoutState, fileRegistry, studies } = useAppState();
     const dispatch = useAppDispatch();
 
-    const { layout, slots, hangingApplied, undoState, activeSlotId } = layoutState;
+    const { layout, slots, hangingApplied, undoState, activeSlotId, hoveredSlotId } = layoutState;
     const visibleSlots = getVisibleSlots(layout);
 
     // Refs to DicomViewer instances for imperative action routing
@@ -31,6 +31,15 @@ export function MultiViewport() {
     // Handle slot click (set active)
     const handleSlotClick = useCallback((slotId: ViewportSlotId) => {
         dispatch({ type: 'SET_ACTIVE_SLOT', slotId });
+    }, [dispatch]);
+
+    // Handle slot hover
+    const handleSlotMouseEnter = useCallback((slotId: ViewportSlotId) => {
+        dispatch({ type: 'SET_HOVERED_SLOT', slotId });
+    }, [dispatch]);
+
+    const handleSlotMouseLeave = useCallback(() => {
+        dispatch({ type: 'SET_HOVERED_SLOT', slotId: null });
     }, [dispatch]);
 
     // Smart hanging
@@ -179,12 +188,15 @@ export function MultiViewport() {
                 {visibleSlots.map(slotId => {
                     const slot = slots[slotId];
                     const isActive = slot.isActive;
+                    const isHovered = hoveredSlotId === slotId && !isActive;
 
                     return (
                         <div
                             key={slotId}
-                            className={`multi-viewport__slot ${isActive ? 'multi-viewport__slot--active' : ''}`}
+                            className={`multi-viewport__slot ${isActive ? 'multi-viewport__slot--active' : ''} ${isHovered ? 'multi-viewport__slot--hovered' : ''}`}
                             onClick={() => handleSlotClick(slotId)}
+                            onMouseEnter={() => handleSlotMouseEnter(slotId)}
+                            onMouseLeave={handleSlotMouseLeave}
                         >
                             {slot.series ? (
                                 <DicomViewer
@@ -200,6 +212,12 @@ export function MultiViewport() {
                                     <p className="multi-viewport__empty-hint">
                                         {isActive ? 'Select a series from the browser' : 'Click to activate'}
                                     </p>
+                                </div>
+                            )}
+                            {/* Hover overlay for Alt+click assignment */}
+                            {isHovered && visibleSlots.length > 1 && (
+                                <div className="multi-viewport__hover-overlay">
+                                    <span>Alt+click to assign here</span>
                                 </div>
                             )}
                         </div>

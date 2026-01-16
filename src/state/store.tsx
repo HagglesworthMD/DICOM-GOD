@@ -147,6 +147,7 @@ export type AppAction =
     // Multi-viewport layout
     | { type: 'SET_LAYOUT'; layout: ViewportLayout }
     | { type: 'SET_ACTIVE_SLOT'; slotId: ViewportSlotId }
+    | { type: 'SET_HOVERED_SLOT'; slotId: ViewportSlotId | null }
     | { type: 'ASSIGN_SERIES_TO_SLOT'; slotId: ViewportSlotId; series: Series | null }
     | { type: 'APPLY_HANGING'; assignments: Array<{ slotId: ViewportSlotId; series: Series }> }
     | { type: 'UNDO_HANGING' }
@@ -274,6 +275,16 @@ export function reducer(state: AppState, action: AppAction): AppState {
                     ...state.layoutState,
                     slots: newSlots,
                     activeSlotId: action.slotId,
+                },
+            };
+        }
+
+        case 'SET_HOVERED_SLOT': {
+            return {
+                ...state,
+                layoutState: {
+                    ...state.layoutState,
+                    hoveredSlotId: action.slotId,
                 },
             };
         }
