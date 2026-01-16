@@ -297,3 +297,16 @@
         opacity: 0.5;
     }
 }
+.dicom-viewer__spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid rgba(255, 255, 255, 0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: dicom-spin 1s linear infinite;
+    margin-bottom: 0.5rem;
+}
+
+@keyframes dicom-spin {
+    to { transform: rotate(360deg); }
+}

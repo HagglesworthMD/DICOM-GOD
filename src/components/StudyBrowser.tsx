@@ -94,7 +94,14 @@ function getTrustTooltip(series: Series): string {
 /** Get badge label for series kind */
 function getKindBadge(kind: Series['kind']): { text: string; color: string } {
     switch (kind) {
-        case 'stack': return { text: 'STACK', color: '#4a9' };
+        case 'stack':
+            // Note: 'stack' just means scrollable. UI should check cineEligible for 'SHORT' label if needed, 
+            // but here we just return basic STACK. 
+            // Actually, let's inject logic to return SHORT if needed, but getKindBadge only takes `kind`.
+            // We need to change the function signature or logic in the component. 
+            // Wait, I can't access `series` here. 
+            // I will update the function signature in the next step or do it inline.
+            return { text: 'STACK', color: '#4a9' };
         case 'multiframe': return { text: 'CINE', color: '#49f' };
         case 'unsafe': return { text: 'UNSAFE', color: '#f44' };
         case 'single':
@@ -105,7 +112,10 @@ function getKindBadge(kind: Series['kind']): { text: string; color: string } {
 function SeriesItem({ series, isSelected, onSelect }: SeriesItemProps) {
     const trustBadge = getTrustBadge(series.geometryTrust);
     const trustTooltip = getTrustTooltip(series);
-    const kindBadge = getKindBadge(series.kind);
+    let kindBadge = getKindBadge(series.kind);
+    if (series.kind === 'stack' && !series.cineEligible) {
+        kindBadge = { text: 'SHORT', color: '#977' }; // Muted reddish-gray
+    }
 
     // Build kind tooltip
     let kindTooltip = `Type: ${series.kind}`;

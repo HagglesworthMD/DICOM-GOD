@@ -434,7 +434,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         // Handle loading state
         if (!frameToRender) {
             if (loading) {
-                renderLoading(canvas, 'Loading...');
+                renderLoading(canvas, 'Decoding...');
             }
             return;
         }
@@ -519,58 +519,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         return () => window.removeEventListener('resize', handleResize);
     }, []);
 
-    // Keyboard shortcuts
-    useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.target instanceof HTMLInputElement) return;
 
-            switch (e.key.toLowerCase()) {
-                case 'i':
-                    setViewState(prev => ({ ...prev, invert: !prev.invert }));
-                    break;
-                case 'r':
-                    setViewState(prev => ({
-                        ...prev,
-                        zoom: 1,
-                        panX: 0,
-                        panY: 0,
-                        invert: false,
-                        windowCenter: currentFrame?.windowCenter ?? 40,
-                        windowWidth: currentFrame?.windowWidth ?? 400,
-                    }));
-                    break;
-                case ' ':
-                    e.preventDefault();
-                    toggleCine();
-                    break;
-                case 'arrowup':
-                    e.preventDefault();
-                    prevFrame();
-                    break;
-                case 'arrowdown':
-                    e.preventDefault();
-                    nextFrame();
-                    break;
-            }
-        };
-
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [currentFrame]);
-
-    const nextFrame = useCallback(() => {
-        setViewState(prev => ({
-            ...prev,
-            frameIndex: Math.min(prev.frameIndex + 1, instances.length - 1),
-        }));
-    }, [instances.length]);
-
-    const prevFrame = useCallback(() => {
-        setViewState(prev => ({
-            ...prev,
-            frameIndex: Math.max(prev.frameIndex - 1, 0),
-        }));
-    }, []);
 
     const toggleCine = useCallback(() => {
         // Guard: don't start cine on short series
@@ -1041,7 +990,8 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                             </>
                         ) : (
                             <>
-                                <h3>⏳ Loading Files...</h3>
+                                <div className="dicom-viewer__spinner" />
+                                <h3>Loading Files...</h3>
                                 <p>Waiting for scanner...</p>
                             </>
                         )}

@@ -480,7 +480,8 @@ function sortStudyContents(study: Study) {
     }
 
     // Classify each series (kind, cineEligible)
-    const MIN_STACK_IMAGES = 5;
+    const MIN_STACK_IMAGES = 2; // Allow scrolling for essentially anything > 1
+    const MIN_CINE_FRAMES = 10; // Only cine if it looks good (arbitrary aesthetic threshold)
 
     for (const series of study.series) {
         const instanceCount = series.instances.length;
@@ -500,8 +501,14 @@ function sortStudyContents(study: Study) {
             series.cineReason = 'Geometry unsafe';
         } else if (instanceCount >= MIN_STACK_IMAGES) {
             series.kind = 'stack';
-            series.cineEligible = true;
-            series.cineReason = undefined;
+            // Gate cine behind higher frame count to avoid ugly looping
+            if (instanceCount >= MIN_CINE_FRAMES) {
+                series.cineEligible = true;
+                series.cineReason = undefined;
+            } else {
+                series.cineEligible = false;
+                series.cineReason = `Too few frames (${instanceCount} < ${MIN_CINE_FRAMES})`;
+            }
         } else {
             series.kind = 'single';
             series.cineEligible = false;
