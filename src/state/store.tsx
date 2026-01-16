@@ -6,6 +6,28 @@
 import { createContext, useContext, useReducer, type ReactNode, type Dispatch } from 'react';
 import type { FileEntry, AppError, Study, Series, IndexProgress, FileRegistry } from '../core/types';
 
+// Preferences shape
+export interface UserPreferences {
+    pauseCineOnMeasure: boolean;
+}
+
+const DEFAULT_PREFS: UserPreferences = {
+    pauseCineOnMeasure: false,
+};
+
+// Safe localStorage init
+function getInitialPrefs(): UserPreferences {
+    try {
+        const stored = localStorage.getItem('dicom_god_prefs');
+        if (stored) {
+            return { ...DEFAULT_PREFS, ...JSON.parse(stored) };
+        }
+    } catch (e) {
+        console.warn('Failed to load prefs', e);
+    }
+    return DEFAULT_PREFS;
+}
+
 // State shape
 export interface AppState {
     /** Selected/dropped files (not yet parsed) */
@@ -34,6 +56,9 @@ export interface AppState {
     storedFolderName: string | null;
     /** File registry: fileKey -> File/handle */
     fileRegistry: FileRegistry;
+
+    /** User preferences */
+    preferences: UserPreferences;
 }
 
 const initialState: AppState = {
@@ -52,6 +77,8 @@ const initialState: AppState = {
     storedFolderName: null,
     // Step 3: File registry
     fileRegistry: new Map(),
+
+    preferences: getInitialPrefs(),
 };
 
 // Actions
@@ -74,10 +101,12 @@ export type AppAction =
     | { type: 'SET_STORED_FOLDER'; hasFolder: boolean; name: string | null }
     // Step 3: File registry
     | { type: 'SET_FILE_REGISTRY'; registry: FileRegistry }
-    | { type: 'CLEAR_FILE_REGISTRY' };
+    | { type: 'CLEAR_FILE_REGISTRY' }
+    // Preferences
+    | { type: 'SET_PREFERENCE'; key: keyof UserPreferences; value: boolean };
 
 // Reducer
-function reducer(state: AppState, action: AppAction): AppState {
+export function reducer(state: AppState, action: AppAction): AppState {
     switch (action.type) {
         case 'SET_FILES':
             return { ...state, files: action.files };
@@ -132,6 +161,17 @@ function reducer(state: AppState, action: AppAction): AppState {
             return { ...state, fileRegistry: action.registry };
         case 'CLEAR_FILE_REGISTRY':
             return { ...state, fileRegistry: new Map() };
+
+        // Preferences
+        case 'SET_PREFERENCE': {
+            const newPrefs = { ...state.preferences, [action.key]: action.value };
+            try {
+                localStorage.setItem('dicom_god_prefs', JSON.stringify(newPrefs));
+            } catch (e) {
+                console.error('Failed to save prefs', e);
+            }
+            return { ...state, preferences: newPrefs };
+        }
 
         default:
             return state;

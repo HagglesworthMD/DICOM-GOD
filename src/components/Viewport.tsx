@@ -4,7 +4,7 @@
 
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { getFlag } from '../core/featureFlags';
-import { useAppState } from '../state/store';
+import { useAppState, useAppDispatch } from '../state/store';
 import {
     decodeFrame,
     registerInstanceFiles,
@@ -20,8 +20,7 @@ import type { Series, Instance, DecodedFrame, ViewportState, FileRegistry } from
 import './Viewport.css';
 import { selectFrameForInteraction } from '../core/frameUtils';
 
-// Config: Pause cine when drawing measurements?
-const PAUSE_CINE_ON_MEASURE = false;
+
 
 const DEFAULT_STATE: ViewportState = {
     frameIndex: 0,
@@ -101,6 +100,8 @@ interface DicomViewerProps {
 }
 
 export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
+    const { preferences } = useAppState();
+    const dispatch = useAppDispatch();
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [viewState, setViewState] = useState<ViewportState>(DEFAULT_STATE);
@@ -744,7 +745,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         if (viewState.activeTool === 'length' && e.button === 0 && !e.shiftKey && !e.altKey && !e.ctrlKey) {
 
             // Optional: Pause cine when drawing measurements
-            if (PAUSE_CINE_ON_MEASURE && viewState.isPlaying) {
+            if (preferences.pauseCineOnMeasure && viewState.isPlaying) {
                 toggleCine();
             }
 
@@ -865,6 +866,26 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                     >
                         {viewState.activeTool === 'hand' ? '✋' : '📏'}
                     </button>
+                    {viewState.activeTool === 'length' && (
+                        <button
+                            onClick={() => dispatch({
+                                type: 'SET_PREFERENCE',
+                                key: 'pauseCineOnMeasure',
+                                value: !preferences.pauseCineOnMeasure
+                            })}
+                            title={`Pause cine while dragging: ${preferences.pauseCineOnMeasure ? 'ON' : 'OFF'}`}
+                            style={{
+                                opacity: preferences.pauseCineOnMeasure ? 1 : 0.3,
+                                fontSize: '0.9em',
+                                width: '24px',
+                                marginLeft: '2px',
+                                marginRight: '4px',
+                                color: preferences.pauseCineOnMeasure ? '#fc4' : 'inherit'
+                            }}
+                        >
+                            ⏸
+                        </button>
+                    )}
                     <button
                         onClick={toggleCine}
                         disabled={!canCine}
