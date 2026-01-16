@@ -100,6 +100,17 @@ export function clearInstanceFiles(): void {
 }
 
 /**
+ * Clear registered files for specific instances only
+ * Used by multi-viewport to avoid clearing files from other viewports
+ */
+export function clearInstanceFilesForSeries(instanceUids: string[]): void {
+    for (const uid of instanceUids) {
+        fileMap.delete(uid);
+    }
+    log.debug(`Cleared ${instanceUids.length} instance files (selective)`);
+}
+
+/**
  * Get file for an instance
  */
 export function getInstanceFile(instanceUid: string): File | undefined {

@@ -8,7 +8,7 @@ import { useAppState, useAppDispatch } from '../state/store';
 import {
     decodeFrame,
     registerInstanceFiles,
-    clearInstanceFiles,
+    clearInstanceFilesForSeries,
     DecodeError
 } from '../core/decodeBridge';
 import { renderFrame, renderLoading, renderError, drawOverlay } from '../core/canvas2dRenderer';
@@ -265,7 +265,9 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
             return () => {
                 mounted = false;
-                clearInstanceFiles();
+                // Clear only files for THIS series, not all files (multi-viewport safe)
+                const instanceUids = instances.map(i => i.sopInstanceUid);
+                clearInstanceFilesForSeries(instanceUids);
             };
         }, [instances, fileRegistry]);
 
