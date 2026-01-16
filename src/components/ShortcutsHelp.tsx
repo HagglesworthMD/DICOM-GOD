@@ -13,12 +13,6 @@ const shortcuts: Shortcut[] = [
     { key: 'O', modifier: 'ctrl', description: 'Open folder' },
     { key: 'L', modifier: 'ctrl', description: 'Toggle local-only mode' },
     { key: 'Escape', description: 'Close dialogs / deselect' },
-    { key: '↑ / ↓', description: 'Navigate stack (future)' },
-    { key: 'W', description: 'Window/Level mode (future)' },
-    { key: 'Z', description: 'Zoom mode (future)' },
-    { key: 'P', description: 'Pan mode (future)' },
-    { key: 'R', description: 'Reset view (future)' },
-    { key: 'Space', description: 'Play/Pause cine (future)' },
 ];
 
 export function ShortcutsHelp() {
@@ -56,9 +50,6 @@ export function ShortcutsHelp() {
                     ))}
                 </tbody>
             </table>
-            <p className="shortcuts-note">
-                Note: Most shortcuts are placeholders for future functionality
-            </p>
         </Modal>
     );
 }
