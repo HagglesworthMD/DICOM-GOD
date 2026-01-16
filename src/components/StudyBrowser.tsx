@@ -211,11 +211,12 @@ function ProgressIndicator() {
 }
 
 export function StudyBrowser() {
-    const { files, studies, selectedSeries, indexProgress } = useAppState();
+    const { files, studies, selectedSeries, indexProgress, layoutState } = useAppState();
     const dispatch = useAppDispatch();
 
     const handleSelectSeries = (series: Series) => {
-        dispatch({ type: 'SELECT_SERIES', series });
+        // Assign to active viewport slot
+        dispatch({ type: 'ASSIGN_SERIES_TO_SLOT', slotId: layoutState.activeSlotId, series });
     };
 
     const isLoading = indexProgress &&

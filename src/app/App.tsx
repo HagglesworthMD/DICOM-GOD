@@ -8,7 +8,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 import { DropZone } from '../components/DropZone';
 import { FolderPicker } from '../components/FolderPicker';
 import { StudyBrowser } from '../components/StudyBrowser';
-import { Viewport } from '../components/Viewport';
+import { MultiViewport } from '../components/MultiViewport';
 import { StatusBar } from '../components/StatusBar';
 import { LocalModeBanner } from '../components/LocalModeBanner';
 import { ShortcutsHelp } from '../components/ShortcutsHelp';
@@ -234,7 +234,7 @@ function AppContent() {
 
                 <DropZone onFiles={handleFilesSelected} className="app__main">
                     <StudyBrowser />
-                    <Viewport />
+                    <MultiViewport />
                 </DropZone>
 
                 <StatusBar />

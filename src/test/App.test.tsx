@@ -19,7 +19,7 @@ describe('App', () => {
 
     it('renders the viewport placeholder', () => {
         render(<App />);
-        expect(screen.getByText('DICOM Viewport')).toBeInTheDocument();
+        expect(screen.getByText('Viewport 1')).toBeInTheDocument();
     });
 
     it('shows Open Folder button', () => {

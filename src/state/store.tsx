@@ -5,6 +5,13 @@
 
 import { createContext, useContext, useReducer, type ReactNode, type Dispatch } from 'react';
 import type { FileEntry, AppError, Study, Series, IndexProgress, FileRegistry } from '../core/types';
+import {
+    type LayoutState,
+    type ViewportLayout,
+    type ViewportSlotId,
+    createInitialLayoutState,
+    getVisibleSlots,
+} from '../core/viewportModel';
 
 // Preferences shape
 export interface SeriesPreference {
@@ -73,6 +80,9 @@ export interface AppState {
 
     /** User preferences */
     preferences: UserPreferences;
+
+    /** Multi-viewport layout state */
+    layoutState: LayoutState;
 }
 
 // Local mode default: ON
@@ -105,6 +115,9 @@ const initialState: AppState = {
     fileRegistry: new Map(),
 
     preferences: getInitialPrefs(),
+
+    // Multi-viewport layout
+    layoutState: createInitialLayoutState(),
 };
 
 // Actions
@@ -130,7 +143,14 @@ export type AppAction =
     | { type: 'CLEAR_FILE_REGISTRY' }
     // Preferences
     | { type: 'SET_PREFERENCE'; key: keyof UserPreferences; value: any }
-    | { type: 'UPDATE_SERIES_PREF'; seriesKey: string; prefKey: keyof SeriesPreference; value: boolean };
+    | { type: 'UPDATE_SERIES_PREF'; seriesKey: string; prefKey: keyof SeriesPreference; value: boolean }
+    // Multi-viewport layout
+    | { type: 'SET_LAYOUT'; layout: ViewportLayout }
+    | { type: 'SET_ACTIVE_SLOT'; slotId: ViewportSlotId }
+    | { type: 'ASSIGN_SERIES_TO_SLOT'; slotId: ViewportSlotId; series: Series | null }
+    | { type: 'APPLY_HANGING'; assignments: Array<{ slotId: ViewportSlotId; series: Series }> }
+    | { type: 'UNDO_HANGING' }
+    | { type: 'CLEAR_HANGING_BANNER' };
 
 // Reducer
 export function reducer(state: AppState, action: AppAction): AppState {
@@ -222,6 +242,102 @@ export function reducer(state: AppState, action: AppAction): AppState {
                 console.error('Failed to save prefs', e);
             }
             return { ...state, preferences: newPrefs };
+        }
+
+        // Multi-viewport layout reducers
+        case 'SET_LAYOUT': {
+            const newSlots = state.layoutState.slots.map(slot => ({
+                ...slot,
+                // Keep series if slot is still visible in new layout
+                series: getVisibleSlots(action.layout).includes(slot.id) ? slot.series : null,
+            }));
+            return {
+                ...state,
+                layoutState: {
+                    ...state.layoutState,
+                    layout: action.layout,
+                    slots: newSlots,
+                    hangingApplied: false,
+                    undoState: null,
+                },
+            };
+        }
+
+        case 'SET_ACTIVE_SLOT': {
+            const newSlots = state.layoutState.slots.map(slot => ({
+                ...slot,
+                isActive: slot.id === action.slotId,
+            }));
+            return {
+                ...state,
+                layoutState: {
+                    ...state.layoutState,
+                    slots: newSlots,
+                    activeSlotId: action.slotId,
+                },
+            };
+        }
+
+        case 'ASSIGN_SERIES_TO_SLOT': {
+            const newSlots = state.layoutState.slots.map(slot =>
+                slot.id === action.slotId ? { ...slot, series: action.series } : slot
+            );
+            return {
+                ...state,
+                layoutState: {
+                    ...state.layoutState,
+                    slots: newSlots,
+                    hangingApplied: false,
+                },
+                // Also update legacy selectedSeries for compatibility
+                selectedSeries: action.series,
+            };
+        }
+
+        case 'APPLY_HANGING': {
+            // Save current state for undo
+            const undoState = state.layoutState.slots.map(s => ({ ...s }));
+
+            // Apply assignments
+            const newSlots = state.layoutState.slots.map(slot => {
+                const assignment = action.assignments.find(a => a.slotId === slot.id);
+                return assignment ? { ...slot, series: assignment.series } : slot;
+            });
+
+            return {
+                ...state,
+                layoutState: {
+                    ...state.layoutState,
+                    slots: newSlots,
+                    hangingApplied: true,
+                    undoState,
+                },
+                // Update selectedSeries to first assigned series
+                selectedSeries: action.assignments[0]?.series ?? state.selectedSeries,
+            };
+        }
+
+        case 'UNDO_HANGING': {
+            if (!state.layoutState.undoState) return state;
+            return {
+                ...state,
+                layoutState: {
+                    ...state.layoutState,
+                    slots: state.layoutState.undoState,
+                    hangingApplied: false,
+                    undoState: null,
+                },
+            };
+        }
+
+        case 'CLEAR_HANGING_BANNER': {
+            return {
+                ...state,
+                layoutState: {
+                    ...state.layoutState,
+                    hangingApplied: false,
+                },
+            };
         }
 
         default:

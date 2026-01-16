@@ -20,6 +20,18 @@ describe('Store Reducer - Preferences', () => {
             hasStoredFolder: false,
             storedFolderName: null,
             fileRegistry: new Map(),
+            layoutState: {
+                layout: 1,
+                slots: [
+                    { id: 0, series: null, isActive: true },
+                    { id: 1, series: null, isActive: false },
+                    { id: 2, series: null, isActive: false },
+                    { id: 3, series: null, isActive: false },
+                ],
+                activeSlotId: 0,
+                hangingApplied: false,
+                undoState: null,
+            },
         };
 
         // Mock localStorage
