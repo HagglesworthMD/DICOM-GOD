@@ -18,6 +18,10 @@ void _verifySeriesGeometry; // Suppress unused warning - may be used later
 import { isTransferSyntaxSupported } from '../core/types';
 import type { Series, Instance, DecodedFrame, ViewportState, FileRegistry } from '../core/types';
 import './Viewport.css';
+import { selectFrameForInteraction } from '../core/frameUtils';
+
+// Config: Pause cine when drawing measurements?
+const PAUSE_CINE_ON_MEASURE = false;
 
 const DEFAULT_STATE: ViewportState = {
     frameIndex: 0,
@@ -699,8 +703,8 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const canvasToImageCoords = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
         const canvas = canvasRef.current;
         const container = containerRef.current;
-        // Use same frame fallback as renderer for tool consistency
-        const frameForTools = currentFrame ?? lastGoodFrameRef.current;
+        // Use selectFrameForInteraction utility (which prefers currentFrame, falls back to lastGoodFrameRef)
+        const frameForTools = selectFrameForInteraction(currentFrame, lastGoodFrameRef.current);
         if (!canvas || !container || !frameForTools) return null;
 
         const rect = canvas.getBoundingClientRect();
@@ -738,6 +742,12 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
         // Measurement tool takes priority on left click
         if (viewState.activeTool === 'length' && e.button === 0 && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+
+            // Optional: Pause cine when drawing measurements
+            if (PAUSE_CINE_ON_MEASURE && viewState.isPlaying) {
+                toggleCine();
+            }
+
             const imgCoords = canvasToImageCoords(e.clientX, e.clientY);
             if (imgCoords) {
                 measureRef.current = {
