@@ -14,7 +14,9 @@ export type IconName =
     | 'lock'
     | 'unlock'
     | 'file'
-    | 'check';
+    | 'check'
+    | 'download'
+    | 'upload';
 
 interface IconProps {
     name: IconName;
@@ -41,6 +43,10 @@ const icons: Record<IconName, string> = {
     file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" stroke="currentColor" stroke-width="2" fill="none"/><path d="M14 2v6h6" stroke="currentColor" stroke-width="2" fill="none"/>',
     check:
         '<path d="M5 12l5 5L20 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>',
+    download:
+        '<path d="M12 3v12M12 15l-4-4M12 15l4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M4 21h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+    upload:
+        '<path d="M12 17V5M12 5l-4 4M12 5l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M4 21h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
 };
 
 export function Icon({ name, size = 24, className = '' }: IconProps) {

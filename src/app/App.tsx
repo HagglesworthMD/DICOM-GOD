@@ -19,7 +19,16 @@ import { Icon } from '../ui/Icon';
 import { enableLocalOnlyMode, disableLocalOnlyMode, isLocalOnlyMode } from '../core/localOnly';
 import { createWorkerBridge, isWorkerSupported, type IndexingJob } from '../core/ipc';
 import { createLogger } from '../core/logger';
+import {
+    exportViewerState,
+    readStateFromFile,
+    downloadStateAsJson,
+    importViewerState,
+    resolveSeriesFromState,
+    type ViewportStateV1,
+} from '../core/viewerState';
 import type { FileEntry, AppError, FileRegistry } from '../core/types';
+import type { ViewportSlotId } from '../core/viewportModel';
 import '../styles/app.css';
 
 const log = createLogger('App');
@@ -206,6 +215,81 @@ function AppContent() {
         dispatch({ type: 'SET_SHORTCUTS_VISIBLE', visible: true });
     }, [dispatch]);
 
+    // Export viewer state
+    const handleExportState = useCallback(() => {
+        // For now, use empty viewport state map (per-viewport state not yet lifted to store)
+        const perViewportState = new Map<ViewportSlotId, ViewportStateV1>();
+
+        const exportedState = exportViewerState(
+            state.layoutState,
+            perViewportState,
+            state.localModeEnabled
+        );
+
+        downloadStateAsJson(exportedState);
+        dispatch({ type: 'SET_STATUS', message: 'State exported to dicom-god-state.json' });
+    }, [state.layoutState, state.localModeEnabled, dispatch]);
+
+    // Import viewer state
+    const handleImportState = useCallback(() => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,application/json';
+
+        input.onchange = async (e) => {
+            const file = (e.target as HTMLInputElement).files?.[0];
+            if (!file) return;
+
+            const parsed = await readStateFromFile(file);
+            if (!parsed) {
+                dispatch({
+                    type: 'ADD_ERROR',
+                    error: {
+                        id: `import-${Date.now()}`,
+                        message: 'Invalid state file. Could not parse JSON or version mismatch.',
+                        timestamp: Date.now(),
+                    }
+                });
+                return;
+            }
+
+            // Gather all available series
+            const allSeries = state.studies.flatMap(study => study.series);
+
+            // Check what can be restored
+            const report = importViewerState(parsed, allSeries);
+
+            // Apply layout
+            dispatch({ type: 'SET_LAYOUT', layout: parsed.layout });
+            dispatch({ type: 'SET_ACTIVE_SLOT', slotId: parsed.activeSlotId });
+
+            // Resolve and assign series
+            const resolved = resolveSeriesFromState(parsed, allSeries);
+            for (const [slotId, { series }] of resolved) {
+                dispatch({ type: 'ASSIGN_SERIES_TO_SLOT', slotId, series });
+            }
+
+            // Show result
+            if (report.warnings.length > 0) {
+                dispatch({
+                    type: 'ADD_ERROR',
+                    error: {
+                        id: `import-warn-${Date.now()}`,
+                        message: `Import completed with warnings:\n${report.warnings.join('\n')}`,
+                        timestamp: Date.now(),
+                    }
+                });
+            }
+
+            dispatch({
+                type: 'SET_STATUS',
+                message: `Restored ${report.restoredSlots} slot(s) from state file`
+            });
+        };
+
+        input.click();
+    }, [state.studies, dispatch]);
+
     return (
         <ErrorBoundary onError={handleError}>
             <div className="app">
@@ -225,6 +309,14 @@ function AppContent() {
                             checked={isLocalOnlyMode()}
                             onChange={handleLocalModeToggle}
                         />
+
+                        <Button variant="ghost" size="sm" onClick={handleExportState} title="Export viewer state to JSON">
+                            <Icon name="download" size={18} />
+                        </Button>
+
+                        <Button variant="ghost" size="sm" onClick={handleImportState} title="Import viewer state from JSON">
+                            <Icon name="upload" size={18} />
+                        </Button>
 
                         <Button variant="ghost" size="sm" onClick={handleShowShortcuts} title="Keyboard shortcuts (?)">
                             <Icon name="keyboard" size={18} />
