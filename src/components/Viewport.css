@@ -260,7 +260,8 @@
     flex: 1;
     position: relative;
     overflow: hidden;
-    cursor: default; /* Fallback */
+    cursor: default;
+    /* Fallback */
 }
 
 .dicom-viewer__canvas-container[data-tool="hand"] {
@@ -275,7 +276,13 @@
     cursor: crosshair;
 }
 
-/* WL/Invert/etc could use different cursors later, for now we stick to standard */
+.dicom-viewer__canvas-container[data-tool="wl"] {
+    cursor: ns-resize;
+}
+
+.dicom-viewer__canvas-container[data-tool="zoom"] {
+    cursor: zoom-in;
+}
 
 .dicom-viewer__canvas {
     display: block;
@@ -311,6 +318,7 @@
         opacity: 0.5;
     }
 }
+
 .dicom-viewer__spinner {
     width: 24px;
     height: 24px;
@@ -322,5 +330,7 @@
 }
 
 @keyframes dicom-spin {
-    to { transform: rotate(360deg); }
+    to {
+        transform: rotate(360deg);
+    }
 }

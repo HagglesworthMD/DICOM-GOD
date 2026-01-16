@@ -200,7 +200,7 @@ export interface ViewportState {
 }
 
 /** Available viewport tools */
-export type ViewportTool = 'hand' | 'length';
+export type ViewportTool = 'hand' | 'length' | 'wl' | 'zoom';
 
 /** Length measurement in image pixel coordinates */
 export interface LengthMeasurement {

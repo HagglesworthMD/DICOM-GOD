@@ -121,7 +121,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const [missingPermission, setMissingPermission] = useState(false);
     const [waitingForFiles, setWaitingForFiles] = useState(false);
     const cineIntervalRef = useRef<number | null>(null);
-    const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | 'measure' | null }>({ startX: 0, startY: 0, mode: null });
+    const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | 'zoom' | 'measure' | null }>({ startX: 0, startY: 0, mode: null });
     const wheelAccumulator = useRef(0);
     const activeRequestId = useRef(0);
 
@@ -771,6 +771,15 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 case 'HAND_TOOL':
                     setViewState(prev => ({ ...prev, activeTool: 'hand' }));
                     break;
+                case 'WL_TOOL':
+                    setViewState(prev => ({ ...prev, activeTool: 'wl' }));
+                    break;
+                case 'ZOOM_TOOL':
+                    setViewState(prev => ({ ...prev, activeTool: 'zoom' }));
+                    break;
+                case 'MEASURE_TOOL':
+                    setViewState(prev => ({ ...prev, activeTool: 'length' }));
+                    break;
                 case 'PRESET_1':
                 case 'PRESET_2':
                 case 'PRESET_3':
@@ -841,7 +850,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     }, [currentFrame, viewState.zoom, viewState.panX, viewState.panY]);
 
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
-        // Measurement tool takes priority on left click
+        // Measurement tool (length) takes priority on left click
         if (viewState.activeTool === 'length' && e.button === 0 && !e.shiftKey && !e.altKey && !e.ctrlKey) {
 
             // Optional: Pause cine when drawing measurements
@@ -864,6 +873,18 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             return;
         }
 
+        // Tool-based modes (from keyboard shortcuts)
+        if (viewState.activeTool === 'wl' && e.button === 0) {
+            dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'wl' };
+            return;
+        }
+
+        if (viewState.activeTool === 'zoom' && e.button === 0) {
+            dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'zoom' };
+            return;
+        }
+
+        // Fallback: modifier-based modes (for hand tool or no specific tool)
         if (e.button === 0 && (e.altKey || e.ctrlKey)) {
             // Window/Level
             dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'wl' };
@@ -874,7 +895,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             // Pan
             dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'pan' };
         }
-    }, [viewState.activeTool, canvasToImageCoords]);
+    }, [viewState.activeTool, viewState.isPlaying, preferences.pauseCineOnMeasure, canvasToImageCoords, toggleCine]);
 
     const handleMouseMove = useCallback((e: React.MouseEvent) => {
         if (!dragRef.current.mode) return;
@@ -904,6 +925,13 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 ...prev,
                 windowCenter: prev.windowCenter + dy,
                 windowWidth: Math.max(1, prev.windowWidth + dx * 2),
+            }));
+        } else if (dragRef.current.mode === 'zoom') {
+            // Zoom via vertical drag: up = zoom in, down = zoom out
+            const zoomDelta = 1 + dy * -0.005;
+            setViewState(prev => ({
+                ...prev,
+                zoom: Math.max(0.1, Math.min(10, prev.zoom * zoomDelta)),
             }));
         }
 

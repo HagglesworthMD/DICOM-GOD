@@ -12,7 +12,16 @@ const shortcuts: Shortcut[] = [
     { key: '?', description: 'Show this help' },
     { key: 'O', modifier: 'ctrl', description: 'Open folder' },
     { key: 'L', modifier: 'ctrl', description: 'Toggle local-only mode' },
-    { key: 'Escape', description: 'Close dialogs / deselect' },
+    { key: 'Escape', description: 'Close dialogs / Pan tool' },
+    { key: '↑ / ↓', description: 'Navigate stack' },
+    { key: 'H / P', description: 'Pan tool' },
+    { key: 'W', description: 'Window/Level tool' },
+    { key: 'Z', description: 'Zoom tool' },
+    { key: 'M', description: 'Measure tool' },
+    { key: 'R', description: 'Reset view' },
+    { key: 'I', description: 'Invert' },
+    { key: 'Space', description: 'Play/Pause cine' },
+    { key: '1-4', description: 'Window presets' },
 ];
 
 export function ShortcutsHelp() {

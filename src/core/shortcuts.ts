@@ -9,6 +9,9 @@ export type ShortcutAction =
     | 'RESET'
     | 'INVERT'
     | 'HAND_TOOL'
+    | 'WL_TOOL'
+    | 'ZOOM_TOOL'
+    | 'MEASURE_TOOL'
     | 'PRESET_1'
     | 'PRESET_2'
     | 'PRESET_3'
@@ -43,7 +46,20 @@ export function mapKeyToAction(e: KeyboardEvent): ShortcutAction {
         case 'i':
         case 'I': return 'INVERT';
 
-        case 'Escape': return 'HAND_TOOL';
+        case 'Escape':
+        case 'h':
+        case 'H':
+        case 'p':
+        case 'P': return 'HAND_TOOL';
+
+        case 'w':
+        case 'W': return 'WL_TOOL';
+
+        case 'z':
+        case 'Z': return 'ZOOM_TOOL';
+
+        case 'm':
+        case 'M': return 'MEASURE_TOOL';
 
         case ' ': return 'TOGGLE_CINE';
 
