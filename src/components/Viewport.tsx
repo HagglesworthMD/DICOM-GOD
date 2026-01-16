@@ -699,14 +699,16 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const canvasToImageCoords = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
         const canvas = canvasRef.current;
         const container = containerRef.current;
-        if (!canvas || !container || !currentFrame) return null;
+        // Use same frame fallback as renderer for tool consistency
+        const frameForTools = currentFrame ?? lastGoodFrameRef.current;
+        if (!canvas || !container || !frameForTools) return null;
 
         const rect = canvas.getBoundingClientRect();
         const canvasX = clientX - rect.left;
         const canvasY = clientY - rect.top;
 
         // Reverse the display transform from renderFrame
-        const imageAspect = currentFrame.width / currentFrame.height;
+        const imageAspect = frameForTools.width / frameForTools.height;
         const canvasAspect = canvas.width / canvas.height;
 
         let displayWidth: number;
@@ -727,8 +729,8 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         const imageY = (canvas.height - displayHeight) / 2 + viewState.panY;
 
         // Convert canvas coords to image pixel coords
-        const imgPixelX = ((canvasX - imageX) / displayWidth) * currentFrame.width;
-        const imgPixelY = ((canvasY - imageY) / displayHeight) * currentFrame.height;
+        const imgPixelX = ((canvasX - imageX) / displayWidth) * frameForTools.width;
+        const imgPixelY = ((canvasY - imageY) / displayHeight) * frameForTools.height;
 
         return { x: imgPixelX, y: imgPixelY };
     }, [currentFrame, viewState.zoom, viewState.panX, viewState.panY]);
@@ -745,6 +747,8 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                     endY: imgCoords.y
                 };
                 dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'measure' };
+                // Force immediate overlay redraw so endpoints appear instantly
+                setViewState(prev => ({ ...prev }));
             }
             return;
         }
