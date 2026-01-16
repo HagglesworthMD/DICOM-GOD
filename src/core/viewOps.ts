@@ -1,6 +1,3 @@
-
-import type { ViewportState, DecodedFrame } from './types';
-
 // Standard DICOM presets
 export const PRESETS = {
     1: { label: 'Soft Tissue', wc: 40, ww: 400 },

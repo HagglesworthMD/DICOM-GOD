@@ -7,7 +7,7 @@ describe('Store Reducer - Preferences', () => {
 
     beforeEach(() => {
         initialState = {
-            preferences: { pauseCineOnMeasure: false },
+            preferences: { pauseCineOnMeasure: false, seriesPrefs: {} },
             files: [],
             localModeEnabled: false,
             localModeWarnings: [],
@@ -42,7 +42,7 @@ describe('Store Reducer - Preferences', () => {
 
         expect(localStorage.setItem).toHaveBeenCalledWith(
             'dicom_god_prefs',
-            JSON.stringify({ pauseCineOnMeasure: true })
+            JSON.stringify({ pauseCineOnMeasure: true, seriesPrefs: {} })
         );
     });
 

@@ -260,8 +260,22 @@
     flex: 1;
     position: relative;
     overflow: hidden;
+    cursor: default; /* Fallback */
+}
+
+.dicom-viewer__canvas-container[data-tool="hand"] {
+    cursor: grab;
+}
+
+.dicom-viewer__canvas-container[data-tool="hand"]:active {
+    cursor: grabbing;
+}
+
+.dicom-viewer__canvas-container[data-tool="length"] {
     cursor: crosshair;
 }
+
+/* WL/Invert/etc could use different cursors later, for now we stick to standard */
 
 .dicom-viewer__canvas {
     display: block;

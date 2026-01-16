@@ -18,9 +18,9 @@ void _verifySeriesGeometry; // Suppress unused warning - may be used later
 import { isTransferSyntaxSupported } from '../core/types';
 import type { Series, Instance, DecodedFrame, ViewportState, FileRegistry } from '../core/types';
 import './Viewport.css';
-import { selectFrameForInteraction } from '../core/frameUtils';
 import { mapKeyToAction } from '../core/shortcuts';
 import { calculateNextFrame, getPreset } from '../core/viewOps';
+import { resolveFrameAuthority } from '../core/frameAuthority';
 
 
 
@@ -124,6 +124,10 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const wheelAccumulator = useRef(0);
     const activeRequestId = useRef(0);
 
+    // Series Lifecycle Token (Hard Reset)
+    // Incremented on every series switch to fence off old async tasks
+    const activeSeriesTokenRef = useRef(0);
+
     // Measurement in-progress state (image pixel coords)
     const measureRef = useRef<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
 
@@ -148,6 +152,39 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
     // Flicker-free cine: hold last successfully decoded frame to display while buffering
     const lastGoodFrameRef = useRef<DecodedFrame | null>(null);
+
+    // --- Series Switch Hard Reset ---
+    useEffect(() => {
+        // 1. Increment token to invalidate old async/cine
+        activeSeriesTokenRef.current++;
+        const token = activeSeriesTokenRef.current;
+
+        // 2. Clear buffers and caches
+        lastGoodFrameRef.current = null;
+        hasRenderedFrameRef.current = false;
+        prefetchQueueRef.current = [];
+        prefetchQueuedSetRef.current.clear();
+
+        // 3. Reset State (Stop cine, Frame 0)
+        setViewState({
+            ...DEFAULT_STATE,
+            // Preserve tool if desired, or reset to hand? Let's reset to clean slate per request
+            activeTool: 'hand',
+            frameIndex: 0
+        });
+        setCurrentFrame(null);
+        setLoading(true);
+        setError(null);
+
+        // 4. Force stop any lingering cine interval (double safety)
+        if (cineIntervalRef.current) {
+            clearInterval(cineIntervalRef.current);
+            cineIntervalRef.current = null;
+        }
+
+        if (DEBUG_PREFETCH) console.log(`[SeriesSwitch] Token ${token} activated for ${series.seriesInstanceUid}`);
+
+    }, [series.seriesInstanceUid]);
 
 
 
@@ -269,6 +306,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
         // Increment ID for this new frame load attempt - Latest Wins
         const requestId = ++activeRequestId.current;
+        const token = activeSeriesTokenRef.current;
 
         // Only show loading if NOT playing cine (avoid flicker)
         // Keep last frame visible during decode
@@ -280,8 +318,8 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
         decodeFrame(currentInstance, 0)
             .then(frame => {
-                // Ignore if stale
-                if (requestId !== activeRequestId.current) return;
+                // Ignore if stale request or series changed
+                if (requestId !== activeRequestId.current || token !== activeSeriesTokenRef.current) return;
 
                 // Store in cache
                 cache.set(cacheKey, frame);
@@ -298,8 +336,8 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 setLoading(false);
             })
             .catch(err => {
-                // Ignore if stale
-                if (requestId !== activeRequestId.current) return;
+                // Ignore if stale request or series changed
+                if (requestId !== activeRequestId.current || token !== activeSeriesTokenRef.current) return;
 
                 if (err instanceof DecodeError) {
                     setError(err.message);
@@ -316,6 +354,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         const queue = prefetchQueueRef.current;
         const cache = frameCacheRef.current;
         const generation = prefetchGenerationRef.current;
+        const token = activeSeriesTokenRef.current;
 
         // Pump while we have capacity and items in queue
         while (prefetchInflightRef.current < PREFETCH_MAX_INFLIGHT && queue.length > 0) {
@@ -332,11 +371,13 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
             decodeFrame(instance, 0)
                 .then(frame => {
-                    // Check generation - ignore if series changed
+                    // Check generation and series token
                     if (prefetchGenerationRef.current !== generation) {
                         if (DEBUG_PREFETCH) console.log('[PREFETCH] Stale generation, discarding:', cacheKey);
                         return;
                     }
+                    if (activeSeriesTokenRef.current !== token) return;
+
                     cache.set(cacheKey, frame);
                     if (DEBUG_PREFETCH) console.log('[PREFETCH] Cached:', cacheKey, 'size:', cache.size);
                 })
@@ -346,7 +387,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                 .finally(() => {
                     prefetchInflightRef.current--;
                     // Pump again
-                    if (prefetchGenerationRef.current === generation) {
+                    if (prefetchGenerationRef.current === generation && activeSeriesTokenRef.current === token) {
                         runPrefetchPump();
                     }
                 });
@@ -418,18 +459,20 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             return;
         }
 
-        // Determine which frame to render (flicker-free: prefer currentFrame, fallback to last good)
-        let frameToRender: DecodedFrame | null = currentFrame;
-        let isBuffering = false;
+        // Resolve authoritative frame
+        const authority = resolveFrameAuthority(
+            viewState.frameIndex,
+            currentFrame,
+            lastGoodFrameRef.current,
+            viewState.isPlaying
+        );
 
-        if (currentFrame) {
-            // New frame available - update last good frame ref
-            lastGoodFrameRef.current = currentFrame;
-        } else if (lastGoodFrameRef.current && hasRenderedFrameRef.current) {
-            // No new frame but we have a last good frame - use it (flicker-free)
-            frameToRender = lastGoodFrameRef.current;
-            isBuffering = true;
+        if (authority.reason === 'current' && authority.frame) {
+            lastGoodFrameRef.current = authority.frame;
         }
+
+        const isBuffering = authority.isFallback;
+        const frameToRender = authority.frame;
 
         // Handle loading state
         if (!frameToRender) {
@@ -547,6 +590,8 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
     // Cine loop effect - manages the interval based on isPlaying state
     useEffect(() => {
+        const token = activeSeriesTokenRef.current;
+
         // Stop cine if series becomes ineligible (too few frames)
         if (viewState.isPlaying && !canCine) {
             setViewState(prev => ({ ...prev, isPlaying: false }));
@@ -583,6 +628,9 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
         // Time-based cine interval (catch-up skip)
         cineIntervalRef.current = window.setInterval(() => {
+            // Strict token check to prevent phantom steps after series switch
+            if (activeSeriesTokenRef.current !== token) return;
+
             setViewState(p => {
                 // CRITICAL: Hard guard - do NOT advance if not playing
                 if (!p.isPlaying) return p;
@@ -614,6 +662,9 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
 
         const onWheel = (e: WheelEvent) => {
             e.preventDefault();
+
+            // Guard: Single frame series should not scroll (stops 1-frame jitter)
+            if (instances.length <= 1) return;
 
             if (e.ctrlKey || e.metaKey) {
                 // Zoom
@@ -742,8 +793,14 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const canvasToImageCoords = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
         const canvas = canvasRef.current;
         const container = containerRef.current;
-        // Use selectFrameForInteraction utility (which prefers currentFrame, falls back to lastGoodFrameRef)
-        const frameForTools = selectFrameForInteraction(currentFrame, lastGoodFrameRef.current);
+        // Use resolveFrameAuthority to ensure we interact with the visible frame
+        const authority = resolveFrameAuthority(
+            viewState.frameIndex,
+            currentFrame,
+            lastGoodFrameRef.current,
+            viewState.isPlaying
+        );
+        const frameForTools = authority.frame;
         if (!canvas || !container || !frameForTools) return null;
 
         const rect = canvas.getBoundingClientRect();
@@ -965,6 +1022,7 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
             <div
                 ref={containerRef}
                 className="dicom-viewer__canvas-container"
+                data-tool={viewState.activeTool}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
