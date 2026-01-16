@@ -128,7 +128,7 @@ export function MultiViewport() {
                         >
                             {slot.series ? (
                                 <DicomViewer
-                                    key={slot.series.seriesInstanceUid}
+                                    key={`slot-${slotId}`}
                                     series={slot.series}
                                     fileRegistry={fileRegistry}
                                 />
