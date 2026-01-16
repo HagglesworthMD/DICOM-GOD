@@ -7,12 +7,18 @@ import { createContext, useContext, useReducer, type ReactNode, type Dispatch } 
 import type { FileEntry, AppError, Study, Series, IndexProgress, FileRegistry } from '../core/types';
 
 // Preferences shape
+export interface SeriesPreference {
+    stackReverse: boolean;
+}
+
 export interface UserPreferences {
     pauseCineOnMeasure: boolean;
+    seriesPrefs: Record<string, Partial<SeriesPreference>>; // Use Partial to be safe with future additions
 }
 
 const DEFAULT_PREFS: UserPreferences = {
     pauseCineOnMeasure: false,
+    seriesPrefs: {},
 };
 
 // Safe localStorage init
@@ -20,13 +26,21 @@ function getInitialPrefs(): UserPreferences {
     try {
         const stored = localStorage.getItem('dicom_god_prefs');
         if (stored) {
-            return { ...DEFAULT_PREFS, ...JSON.parse(stored) };
+            // Deep merge might be needed if structure gets complex, but shallow spread works for now
+            // excluding nested seriesPrefs merge for simplicity unless needed
+            const parsed = JSON.parse(stored);
+            return {
+                ...DEFAULT_PREFS,
+                ...parsed,
+                seriesPrefs: { ...DEFAULT_PREFS.seriesPrefs, ...(parsed.seriesPrefs || {}) }
+            };
         }
     } catch (e) {
         console.warn('Failed to load prefs', e);
     }
     return DEFAULT_PREFS;
 }
+
 
 // State shape
 export interface AppState {
@@ -103,7 +117,8 @@ export type AppAction =
     | { type: 'SET_FILE_REGISTRY'; registry: FileRegistry }
     | { type: 'CLEAR_FILE_REGISTRY' }
     // Preferences
-    | { type: 'SET_PREFERENCE'; key: keyof UserPreferences; value: boolean };
+    | { type: 'SET_PREFERENCE'; key: keyof UserPreferences; value: any }
+    | { type: 'UPDATE_SERIES_PREF'; seriesKey: string; prefKey: keyof SeriesPreference; value: boolean };
 
 // Reducer
 export function reducer(state: AppState, action: AppAction): AppState {
@@ -165,6 +180,25 @@ export function reducer(state: AppState, action: AppAction): AppState {
         // Preferences
         case 'SET_PREFERENCE': {
             const newPrefs = { ...state.preferences, [action.key]: action.value };
+            try {
+                localStorage.setItem('dicom_god_prefs', JSON.stringify(newPrefs));
+            } catch (e) {
+                console.error('Failed to save prefs', e);
+            }
+            return { ...state, preferences: newPrefs };
+        }
+
+        case 'UPDATE_SERIES_PREF': {
+            const currentSeriesPrefs = state.preferences.seriesPrefs?.[action.seriesKey] || {};
+            const updatedSeriesPrefs = {
+                ...state.preferences.seriesPrefs,
+                [action.seriesKey]: {
+                    ...currentSeriesPrefs,
+                    [action.prefKey]: action.value
+                }
+            };
+            const newPrefs = { ...state.preferences, seriesPrefs: updatedSeriesPrefs };
+
             try {
                 localStorage.setItem('dicom_god_prefs', JSON.stringify(newPrefs));
             } catch (e) {

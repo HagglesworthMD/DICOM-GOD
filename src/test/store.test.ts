@@ -45,4 +45,21 @@ describe('Store Reducer - Preferences', () => {
             JSON.stringify({ pauseCineOnMeasure: true })
         );
     });
+
+    it('updates and persists series preferences', () => {
+        const action = {
+            type: 'UPDATE_SERIES_PREF',
+            seriesKey: '1.2.3',
+            prefKey: 'stackReverse',
+            value: true
+        } as const;
+
+        const newState = reducer(initialState, action);
+        expect(newState.preferences.seriesPrefs['1.2.3'].stackReverse).toBe(true);
+
+        expect(localStorage.setItem).toHaveBeenCalledWith(
+            'dicom_god_prefs',
+            expect.stringContaining('"1.2.3":{"stackReverse":true}')
+        );
+    });
 });

@@ -19,6 +19,8 @@ import { isTransferSyntaxSupported } from '../core/types';
 import type { Series, Instance, DecodedFrame, ViewportState, FileRegistry } from '../core/types';
 import './Viewport.css';
 import { selectFrameForInteraction } from '../core/frameUtils';
+import { mapKeyToAction } from '../core/shortcuts';
+import { calculateNextFrame, getPreset } from '../core/viewOps';
 
 
 
@@ -104,6 +106,12 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
     const dispatch = useAppDispatch();
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+
+    // Per-series preferences
+    const seriesKey = series.seriesInstanceUid || `series-${series.seriesNumber}`;
+    const seriesPref = preferences.seriesPrefs?.[seriesKey] || {};
+    const stackReverse = seriesPref.stackReverse ?? false;
+
     const [viewState, setViewState] = useState<ViewportState>(DEFAULT_STATE);
     const [currentFrame, setCurrentFrame] = useState<DecodedFrame | null>(null);
     const [loading, setLoading] = useState(true);
@@ -681,7 +689,8 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                     wheelAccumulator.current %= threshold;
 
                     if (rawSteps !== 0) {
-                        const steps = rawSteps * multiplier;
+                        const dir = stackReverse ? -1 : 1;
+                        const steps = rawSteps * multiplier * dir;
                         // Track navigation direction
                         lastNavDirRef.current = steps > 0 ? 1 : -1;
 
@@ -698,7 +707,87 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
         // Reset accumulator when series changes to prevent jump
         wheelAccumulator.current = 0;
         return () => container.removeEventListener('wheel', onWheel);
-    }, [series.seriesInstanceUid, instances.length]);
+    }, [series.seriesInstanceUid, instances.length, stackReverse]);
+
+    // Keyboard Shortcuts
+    useEffect(() => {
+        const handleKey = (e: KeyboardEvent) => {
+            const action = mapKeyToAction(e);
+            if (!action) return;
+
+            e.preventDefault();
+
+            switch (action) {
+                case 'TOGGLE_CINE':
+                    toggleCine();
+                    break;
+                case 'PREV_FRAME':
+                    setViewState(prev => ({
+                        ...prev,
+                        frameIndex: calculateNextFrame(prev.frameIndex, instances.length, -1, stackReverse)
+                    }));
+                    break;
+                case 'NEXT_FRAME':
+                    setViewState(prev => ({
+                        ...prev,
+                        frameIndex: calculateNextFrame(prev.frameIndex, instances.length, 1, stackReverse)
+                    }));
+                    break;
+                case 'JUMP_BACK_10':
+                    setViewState(prev => ({
+                        ...prev,
+                        frameIndex: calculateNextFrame(prev.frameIndex, instances.length, -10, stackReverse)
+                    }));
+                    break;
+                case 'JUMP_FWD_10':
+                    setViewState(prev => ({
+                        ...prev,
+                        frameIndex: calculateNextFrame(prev.frameIndex, instances.length, 10, stackReverse)
+                    }));
+                    break;
+                case 'FIRST_FRAME':
+                    setViewState(prev => ({ ...prev, frameIndex: 0 }));
+                    break;
+                case 'LAST_FRAME':
+                    setViewState(prev => ({ ...prev, frameIndex: instances.length - 1 }));
+                    break;
+                case 'RESET':
+                    setViewState(prev => ({
+                        ...prev,
+                        zoom: 1, panX: 0, panY: 0,
+                        windowCenter: currentFrame?.windowCenter ?? 40,
+                        windowWidth: currentFrame?.windowWidth ?? 400,
+                        invert: false
+                    }));
+                    break;
+                case 'INVERT':
+                    setViewState(prev => ({ ...prev, invert: !prev.invert }));
+                    break;
+                case 'HAND_TOOL':
+                    setViewState(prev => ({ ...prev, activeTool: 'hand' }));
+                    break;
+                case 'PRESET_1':
+                case 'PRESET_2':
+                case 'PRESET_3':
+                case 'PRESET_4': {
+                    const key = action.split('_')[1];
+                    const preset = getPreset(key);
+                    if (preset) {
+                        setViewState(prev => ({ ...prev, windowCenter: preset.wc, windowWidth: preset.ww }));
+                        // HUD Feedback via status message
+                        dispatch({ type: 'SET_STATUS', message: `Preset: ${preset.label} (WC: ${preset.wc}, WW: ${preset.ww})` });
+                    }
+                    break;
+                }
+                case 'TOGGLE_HELP':
+                    dispatch({ type: 'SET_SHORTCUTS_VISIBLE', visible: true });
+                    break;
+            }
+        };
+
+        window.addEventListener('keydown', handleKey);
+        return () => window.removeEventListener('keydown', handleKey);
+    }, [instances.length, stackReverse, toggleCine, dispatch, currentFrame]);
 
     // Convert canvas coordinates to image pixel coordinates
     const canvasToImageCoords = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
@@ -893,6 +982,18 @@ export function DicomViewer({ series, fileRegistry }: DicomViewerProps) {
                         style={{ opacity: canCine ? 1 : 0.5 }}
                     >
                         {viewState.isPlaying ? '⏸' : '▶'}
+                    </button>
+                    <button
+                        onClick={() => dispatch({
+                            type: 'UPDATE_SERIES_PREF',
+                            seriesKey,
+                            prefKey: 'stackReverse',
+                            value: !stackReverse
+                        })}
+                        title={`Stack Direction: ${stackReverse ? 'Reverse' : 'Normal'} (Persisted)`}
+                        style={{ color: stackReverse ? '#fc4' : 'inherit', fontSize: '1.1em' }}
+                    >
+                        ⇅
                     </button>
                     <button onClick={() => setViewState(prev => ({ ...prev, invert: !prev.invert }))} title="Invert (I)">
                         ◐
