@@ -16,13 +16,15 @@ import { renderFrame, renderLoading, renderError, drawOverlay } from '../core/ca
 import { verifySeriesGeometry as _verifySeriesGeometry } from '../core/geometryTrust';
 void _verifySeriesGeometry; // Suppress unused warning - may be used later
 import { isTransferSyntaxSupported } from '../core/types';
-import type { Series, Instance, DecodedFrame, ViewportState, FileRegistry } from '../core/types';
+import type { Series, Instance, DecodedFrame, ViewportState, FileRegistry, ContactSheetTile } from '../core/types';
 import './Viewport.css';
 import type { ShortcutAction } from '../core/shortcuts';
-import { calculateNextFrame } from '../core/viewOps';
+import { calculateNextFrame, isSeriesScrollable } from '../core/viewOps';
 import { PRESET_LIST, formatWl, getPresetById } from '../core/wlPresets';
 import { calculateScrubFrameIndex } from '../core/stackScrub';
 import { resolveFrameAuthority } from '../core/frameAuthority';
+import { detectContactSheetHeuristic } from '../core/contactSheet';
+import type { ContactSheet } from '../core/types';
 
 /** Imperative handle exposed by DicomViewer for external action routing */
 export interface DicomViewerHandle {
@@ -44,6 +46,8 @@ const DEFAULT_STATE: ViewportState = {
     cineFrameRate: 15,
     activeTool: 'hand',
     measurements: [],
+    tileMode: false,
+    tileIndex: 0,
 };
 
 // ============================================================================
@@ -129,11 +133,13 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         const [isUnsupported, setIsUnsupported] = useState(false);
         const [missingPermission, setMissingPermission] = useState(false);
         const [waitingForFiles, setWaitingForFiles] = useState(false);
+        const [detectedContactSheet, setDetectedContactSheet] = useState<ContactSheet | null>(null);
         const cineIntervalRef = useRef<number | null>(null);
         const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | 'zoom' | 'measure' | 'scrub' | null }>({ startX: 0, startY: 0, mode: null });
         const scrubRef = useRef<{ startFrame: number; startY: number; wasPlaying: boolean }>({ startFrame: 0, startY: 0, wasPlaying: false });
         const wheelAccumulator = useRef(0);
         const activeRequestId = useRef(0);
+        const contactSheetDetectedRef = useRef(false);
 
         // Series Lifecycle Token (Hard Reset)
         // Incremented on every series switch to fence off old async tasks
@@ -186,6 +192,8 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             setCurrentFrame(null);
             setLoading(true);
             setError(null);
+            setDetectedContactSheet(null);
+            contactSheetDetectedRef.current = false;
 
             // 4. Force stop any lingering cine interval (double safety)
             if (cineIntervalRef.current) {
@@ -201,10 +209,33 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
 
         const instances = series.instances;
-        const currentInstance = instances[viewState.frameIndex];
         // Use series classification from metadata worker
         const canCine = series.cineEligible;
         const cineReason = series.cineReason;
+
+        // ============================================================================
+        // Frame Resolution for STACK vs MULTIFRAME
+        // ============================================================================
+        // STACK: frameIndex indexes into instances array, intraFrameIndex = 0
+        // MULTIFRAME: frameIndex indexes into frames within first instance
+        // ============================================================================
+        const isMultiframe = series.kind === 'multiframe' && instances.length > 0 &&
+            (instances[0].numberOfFrames ?? 1) > 1;
+
+        const totalFrames = isMultiframe
+            ? (instances[0].numberOfFrames ?? 1)
+            : instances.length;
+
+        const currentInstance = isMultiframe
+            ? instances[0]  // Multiframe: always the first (and usually only) instance
+            : instances[viewState.frameIndex];
+
+        const intraFrameIndex = isMultiframe
+            ? viewState.frameIndex  // Multiframe: frameIndex is the frame within the file
+            : 0;  // Stack: always frame 0 within each instance file
+
+        // Effective contact sheet: prefer series-level (from usRegions) over local heuristic
+        const effectiveContactSheet = series.contactSheet ?? detectedContactSheet;
 
 
 
@@ -286,15 +317,10 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 return;
             }
 
-            // Check multi-frame
-            if (currentInstance.numberOfFrames && currentInstance.numberOfFrames > 1) {
-                setError('Multi-frame DICOM not yet supported');
-                setIsUnsupported(true);
-                setLoading(false);
-                return;
-            }
+            // Multiframe is now supported - no rejection needed
+            // The isMultiframe logic above handles frame addressing correctly
 
-            const cacheKey = `${currentInstance.fileKey}:0`;
+            const cacheKey = `${currentInstance.fileKey}:${intraFrameIndex}`;
             const cache = frameCacheRef.current;
 
             // Cache hit - instant display
@@ -329,7 +355,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             setError(null);
             setIsUnsupported(false);
 
-            decodeFrame(currentInstance, 0)
+            decodeFrame(currentInstance, intraFrameIndex)
                 .then(frame => {
                     // Ignore if stale request or series changed
                     if (requestId !== activeRequestId.current || token !== activeSeriesTokenRef.current) return;
@@ -361,6 +387,25 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     setLoading(false);
                 });
         }, [currentInstance, viewState.frameIndex]);
+
+        // Contact sheet detection - runs once after first frame decoded
+        useEffect(() => {
+            // Skip if already detected or no frame yet
+            if (contactSheetDetectedRef.current || !currentFrame) return;
+
+            // Only run for US modality (most common for contact sheets)
+            if (series.modality !== 'US') return;
+
+            // Mark as detected to prevent re-running
+            contactSheetDetectedRef.current = true;
+
+            // Run heuristic detection
+            const detected = detectContactSheetHeuristic(currentFrame);
+            if (detected) {
+                setDetectedContactSheet(detected);
+                dispatch({ type: 'SET_STATUS', message: `Contact sheet detected: ${detected.grid.cols}×${detected.grid.rows} grid` });
+            }
+        }, [currentFrame, series.modality, dispatch]);
 
         // Prefetch pump - runs after frame changes
         const runPrefetchPump = useCallback(() => {
@@ -499,12 +544,23 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 return;
             }
 
-            // Render the frame (current or last good)
-            renderFrame(canvas, frameToRender, viewState);
+            // Compute tile crop rect if in tile mode
+            let tileCropRect: ContactSheetTile | null = null;
+            if (viewState.tileMode && effectiveContactSheet) {
+                const tiles = effectiveContactSheet.tiles;
+                const idx = Math.max(0, Math.min(viewState.tileIndex, tiles.length - 1));
+                tileCropRect = tiles[idx] ?? null;
+            }
+
+            // Render the frame (current or last good, optionally cropped)
+            renderFrame(canvas, frameToRender, viewState, tileCropRect);
             hasRenderedFrameRef.current = true;
 
             // Compute image-to-canvas transform for measurements
-            const imageAspect = frameToRender.width / frameToRender.height;
+            // Use tile dimensions if in tile mode, otherwise full frame
+            const srcW = tileCropRect?.w ?? frameToRender.width;
+            const srcH = tileCropRect?.h ?? frameToRender.height;
+            const imageAspect = srcW / srcH;
             const canvasAspect = canvas.width / canvas.height;
             let displayWidth: number;
             let displayHeight: number;
@@ -522,7 +578,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
             const offsetX = (canvas.width - displayWidth) / 2 + viewState.panX;
             const offsetY = (canvas.height - displayHeight) / 2 + viewState.panY;
-            const scale = displayWidth / frameToRender.width;
+            const scale = displayWidth / srcW;
 
             // Get pixel spacing from current instance
             let pixelSpacing: number[] | undefined;
@@ -540,7 +596,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
             drawOverlay(canvas, {
                 frameIndex: viewState.frameIndex,
-                totalFrames: instances.length,
+                totalFrames: totalFrames,
                 windowCenter: viewState.windowCenter,
                 windowWidth: viewState.windowWidth,
                 zoom: viewState.zoom,
@@ -557,9 +613,15 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     isBuffering: isFallback,
                     cineReason
                 },
-                activePresetName: viewState.activePreset ? getPresetById(viewState.activePreset)?.label : undefined
+                activePresetName: viewState.activePreset ? getPresetById(viewState.activePreset)?.label : undefined,
+                tileInfo: viewState.tileMode && effectiveContactSheet ? {
+                    tileIndex: viewState.tileIndex,
+                    tileCount: effectiveContactSheet.tiles.length,
+                    grid: effectiveContactSheet.grid,
+                    kind: effectiveContactSheet.kind,
+                } : undefined,
             });
-        }, [currentFrame, viewState, loading, error, isUnsupported, instances.length, currentInstance, series.geometryTrustInfo, canCine, cineReason]);
+        }, [currentFrame, viewState, loading, error, isUnsupported, totalFrames, currentInstance, series.geometryTrustInfo, effectiveContactSheet, canCine, cineReason]);
 
         // Resize handler
         useEffect(() => {
@@ -627,7 +689,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             }
 
             const frameDurationMs = 1000 / viewState.cineFrameRate;
-            const totalFrames = instances.length;
+            // totalFrames is already computed above and used for cine target calculation
 
             // Kickstart prefetch for smoother cine start
             const queue: Instance[] = [];
@@ -682,7 +744,11 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 e.preventDefault();
 
                 // Guard: Single frame series should not scroll (stops 1-frame jitter)
-                if (instances.length <= 1) return;
+                if (totalFrames <= 1 && !effectiveContactSheet) return;
+
+                // Guard: Only STACK and MULTIFRAME series allow wheel scrolling
+                // SINGLE and UNSAFE series are excluded (unsafe geometry = bad scroll semantics)
+                if (!isSeriesScrollable(series.kind) && !effectiveContactSheet) return;
 
                 if (e.ctrlKey || e.metaKey) {
                     // Zoom
@@ -691,11 +757,27 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                         ...prev,
                         zoom: Math.max(0.1, Math.min(10, prev.zoom * delta)),
                     }));
+                } else if (e.shiftKey && viewState.tileMode && effectiveContactSheet) {
+                    // Tile cycling with Shift+wheel in tile mode
+                    const tileCount = effectiveContactSheet.tiles.length;
+                    const step = e.deltaY > 0 ? 1 : -1;
+                    setViewState(prev => ({
+                        ...prev,
+                        tileIndex: (prev.tileIndex + step + tileCount) % tileCount
+                    }));
+                } else if (e.altKey && viewState.tileMode && effectiveContactSheet) {
+                    // Alt+wheel also cycles tiles
+                    const tileCount = effectiveContactSheet.tiles.length;
+                    const step = e.deltaY > 0 ? 1 : -1;
+                    setViewState(prev => ({
+                        ...prev,
+                        tileIndex: (prev.tileIndex + step + tileCount) % tileCount
+                    }));
                 } else {
                     // Stack scroll with modifier support
                     // Shift = fast (5 frames), Alt = fine (1 frame with lower threshold)
-                    const fastMode = e.shiftKey;
-                    const fineMode = e.altKey;
+                    const fastMode = e.shiftKey && !viewState.tileMode;
+                    const fineMode = e.altKey && !viewState.tileMode;
 
                     const threshold = fineMode ? 20 : 40; // Lower threshold for fine mode
                     const multiplier = fastMode ? 5 : 1;
@@ -714,7 +796,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
                             setViewState(prev => ({
                                 ...prev,
-                                frameIndex: Math.max(0, Math.min(instances.length - 1, prev.frameIndex + steps))
+                                frameIndex: Math.max(0, Math.min(totalFrames - 1, prev.frameIndex + steps))
                             }));
                         }
                     }
@@ -725,7 +807,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             // Reset accumulator when series changes to prevent jump
             wheelAccumulator.current = 0;
             return () => container.removeEventListener('wheel', onWheel);
-        }, [series.seriesInstanceUid, instances.length, stackReverse]);
+        }, [series.seriesInstanceUid, series.kind, effectiveContactSheet, totalFrames, stackReverse, viewState.tileMode]);
 
         // Imperative action handler for external routing (from MultiViewport)
         const applyAction = useCallback((action: ShortcutAction) => {
@@ -738,32 +820,32 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 case 'PREV_FRAME':
                     setViewState(prev => ({
                         ...prev,
-                        frameIndex: calculateNextFrame(prev.frameIndex, instances.length, -1, stackReverse)
+                        frameIndex: calculateNextFrame(prev.frameIndex, totalFrames, -1, stackReverse)
                     }));
                     break;
                 case 'NEXT_FRAME':
                     setViewState(prev => ({
                         ...prev,
-                        frameIndex: calculateNextFrame(prev.frameIndex, instances.length, 1, stackReverse)
+                        frameIndex: calculateNextFrame(prev.frameIndex, totalFrames, 1, stackReverse)
                     }));
                     break;
                 case 'JUMP_BACK_10':
                     setViewState(prev => ({
                         ...prev,
-                        frameIndex: calculateNextFrame(prev.frameIndex, instances.length, -10, stackReverse)
+                        frameIndex: calculateNextFrame(prev.frameIndex, totalFrames, -10, stackReverse)
                     }));
                     break;
                 case 'JUMP_FWD_10':
                     setViewState(prev => ({
                         ...prev,
-                        frameIndex: calculateNextFrame(prev.frameIndex, instances.length, 10, stackReverse)
+                        frameIndex: calculateNextFrame(prev.frameIndex, totalFrames, 10, stackReverse)
                     }));
                     break;
                 case 'FIRST_FRAME':
                     setViewState(prev => ({ ...prev, frameIndex: 0 }));
                     break;
                 case 'LAST_FRAME':
-                    setViewState(prev => ({ ...prev, frameIndex: instances.length - 1 }));
+                    setViewState(prev => ({ ...prev, frameIndex: totalFrames - 1 }));
                     break;
                 case 'RESET':
                     setViewState(prev => ({
@@ -827,8 +909,37 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 case 'TOGGLE_HELP':
                     dispatch({ type: 'SET_SHORTCUTS_VISIBLE', visible: true });
                     break;
+                case 'TOGGLE_TILE_MODE':
+                    // Only toggle if contact sheet exists
+                    if (effectiveContactSheet) {
+                        setViewState(prev => ({
+                            ...prev,
+                            tileMode: !prev.tileMode,
+                            tileIndex: prev.tileMode ? 0 : prev.tileIndex, // Reset to 0 when disabling
+                        }));
+                        dispatch({ type: 'SET_STATUS', message: viewState.tileMode ? 'Tile mode: OFF' : 'Tile mode: ON' });
+                    }
+                    break;
+                case 'PREV_TILE':
+                    if (viewState.tileMode && effectiveContactSheet) {
+                        const tileCount = effectiveContactSheet.tiles.length;
+                        setViewState(prev => ({
+                            ...prev,
+                            tileIndex: (prev.tileIndex - 1 + tileCount) % tileCount
+                        }));
+                    }
+                    break;
+                case 'NEXT_TILE':
+                    if (viewState.tileMode && effectiveContactSheet) {
+                        const tileCount = effectiveContactSheet.tiles.length;
+                        setViewState(prev => ({
+                            ...prev,
+                            tileIndex: (prev.tileIndex + 1) % tileCount
+                        }));
+                    }
+                    break;
             }
-        }, [instances.length, stackReverse, toggleCine, dispatch, currentFrame]);
+        }, [totalFrames, stackReverse, toggleCine, dispatch, currentFrame, effectiveContactSheet, viewState.tileMode]);
 
         // Expose imperative handle for external action routing
         useImperativeHandle(ref, () => ({
@@ -1112,6 +1223,24 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                         >
                             ⇅
                         </button>
+                        {/* Tile mode toggle - only show when contact sheet detected */}
+                        {effectiveContactSheet && (
+                            <button
+                                onClick={() => setViewState(prev => ({
+                                    ...prev,
+                                    tileMode: !prev.tileMode,
+                                    tileIndex: prev.tileMode ? 0 : prev.tileIndex,
+                                }))}
+                                title={`Tile Mode (T): ${viewState.tileMode ? 'ON' : 'OFF'} - ${effectiveContactSheet.grid.cols}×${effectiveContactSheet.grid.rows} grid`}
+                                style={{
+                                    color: viewState.tileMode ? '#4f4' : 'inherit',
+                                    background: viewState.tileMode ? 'var(--color-surface-hover)' : undefined,
+                                    borderColor: viewState.tileMode ? '#4f4' : undefined,
+                                }}
+                            >
+                                ▦
+                            </button>
+                        )}
                         <button onClick={() => setViewState(prev => ({ ...prev, invert: !prev.invert }))} title="Invert (I)">
                             ◐
                         </button>
@@ -1169,7 +1298,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 </div>
 
                 <div className="dicom-viewer__status">
-                    <span>Frame: {viewState.frameIndex + 1}/{instances.length}</span>
+                    <span>Frame: {viewState.frameIndex + 1}/{totalFrames}</span>
                     <span>WC/WW: {Math.round(viewState.windowCenter)}/{Math.round(viewState.windowWidth)}</span>
                     <span>Zoom: {Math.round(viewState.zoom * 100)}%</span>
                     {viewState.isPlaying && <span className="dicom-viewer__cine">▶ CINE</span>}

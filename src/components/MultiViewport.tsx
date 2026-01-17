@@ -207,6 +207,7 @@ export function MultiViewport() {
                             key={slotId}
                             className={`multi-viewport__slot ${isActive ? 'multi-viewport__slot--active' : ''} ${isHovered ? 'multi-viewport__slot--hovered' : ''}`}
                             onClick={() => handleSlotClick(slotId)}
+                            onPointerDown={() => handleSlotClick(slotId)}
                             onMouseEnter={() => handleSlotMouseEnter(slotId)}
                             onMouseLeave={handleSlotMouseLeave}
                         >

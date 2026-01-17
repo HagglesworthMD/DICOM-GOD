@@ -4,20 +4,30 @@
  */
 
 import { applyWindowToRGBA } from './voi';
-import type { DecodedFrame, ViewportState, LengthMeasurement, GeometryTrustInfo } from './types';
+import type { DecodedFrame, ViewportState, LengthMeasurement, GeometryTrustInfo, ContactSheetTile } from './types';
 
 export interface RenderResult {
     success: boolean;
     error?: string;
 }
 
+/** Optional crop rectangle for tile mode rendering */
+export interface CropRect {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+}
+
 /**
  * Render a decoded frame to a canvas
+ * @param cropRect Optional crop region for tile mode (renders only this portion)
  */
 export function renderFrame(
     canvas: HTMLCanvasElement,
     frame: DecodedFrame,
-    state: ViewportState
+    state: ViewportState,
+    cropRect?: CropRect | ContactSheetTile | null
 ): RenderResult {
     const ctx = canvas.getContext('2d');
     if (!ctx) {
@@ -25,7 +35,7 @@ export function renderFrame(
     }
 
     try {
-        // Create image data
+        // Create image data for full frame
         const imageData = ctx.createImageData(frame.width, frame.height);
 
         // Apply windowing
@@ -46,8 +56,14 @@ export function renderFrame(
         const canvasWidth = canvas.width;
         const canvasHeight = canvas.height;
 
+        // Source region (full frame or crop)
+        const srcX = cropRect?.x ?? 0;
+        const srcY = cropRect?.y ?? 0;
+        const srcW = cropRect?.w ?? frame.width;
+        const srcH = cropRect?.h ?? frame.height;
+
         // Fit to canvas while maintaining aspect ratio
-        const imageAspect = frame.width / frame.height;
+        const imageAspect = srcW / srcH;
         const canvasAspect = canvasWidth / canvasHeight;
 
         let displayWidth: number;
@@ -82,10 +98,16 @@ export function renderFrame(
 
         tempCtx.putImageData(imageData, 0, 0);
 
-        // Draw scaled image
+        // Draw scaled image (with optional cropping)
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(tempCanvas, x, y, displayWidth, displayHeight);
+
+        // Use drawImage with source rect for cropping
+        ctx.drawImage(
+            tempCanvas,
+            srcX, srcY, srcW, srcH,  // Source rectangle (crop region)
+            x, y, displayWidth, displayHeight  // Destination rectangle
+        );
 
         return { success: true };
     } catch (err) {
@@ -179,6 +201,12 @@ export function drawOverlay(
             cineReason?: string;
         };
         activePresetName?: string;
+        tileInfo?: {
+            tileIndex: number;
+            tileCount: number;
+            grid: { cols: number; rows: number };
+            kind: 'usRegions' | 'heuristic';
+        };
     }
 ): void {
     const ctx = canvas.getContext('2d');
@@ -192,9 +220,15 @@ export function drawOverlay(
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
     ctx.font = '12px monospace';
 
-    // Top-left: Frame info + Cine status
+    // Top-left: Frame info + Tile info + Cine status
     let frameText = `${info.frameIndex + 1} / ${info.totalFrames}`;
     let cineColor = '#fff';
+
+    // Add tile info if in tile mode
+    if (info.tileInfo) {
+        const trustIcon = info.tileInfo.kind === 'usRegions' ? '🟢' : '🟡';
+        frameText += ` | Tile ${info.tileInfo.tileIndex + 1}/${info.tileInfo.tileCount} ${trustIcon} ${info.tileInfo.grid.cols}×${info.tileInfo.grid.rows}`;
+    }
 
     if (info.cineInfo) {
         if (info.cineInfo.isPlaying) {

@@ -61,6 +61,30 @@ export interface Study {
 /** Series classification for UI and behavior gating */
 export type SeriesKind = 'stack' | 'single' | 'multiframe' | 'unsafe';
 
+/** Contact sheet tile rectangle */
+export interface ContactSheetTile {
+    /** X offset in pixels */
+    x: number;
+    /** Y offset in pixels */
+    y: number;
+    /** Width in pixels */
+    w: number;
+    /** Height in pixels */
+    h: number;
+}
+
+/** Contact sheet detection result */
+export interface ContactSheet {
+    /** Detection method */
+    kind: 'usRegions' | 'heuristic';
+    /** Grid dimensions */
+    grid: { cols: number; rows: number };
+    /** Individual tile rectangles */
+    tiles: ContactSheetTile[];
+    /** Reason/confidence info */
+    reason: string;
+}
+
 /** DICOM Series - group of related instances */
 export interface Series {
     seriesInstanceUid: string;
@@ -80,6 +104,8 @@ export interface Series {
     cineReason?: string;
     /** True if any instance has NumberOfFrames > 1 */
     hasMultiframe?: boolean;
+    /** Contact sheet detection for US montage images */
+    contactSheet?: ContactSheet;
 }
 
 /** DICOM Instance - single image/object */
@@ -199,6 +225,10 @@ export interface ViewportState {
     measurements: LengthMeasurement[];
     /** Active WL preset ID (optional for display) */
     activePreset?: string;
+    /** Tile mode for contact sheet viewing */
+    tileMode: boolean;
+    /** Current tile index within contact sheet */
+    tileIndex: number;
 }
 
 /** Available viewport tools */
@@ -227,6 +257,8 @@ export const DEFAULT_VIEWPORT_STATE: ViewportState = {
     cineFrameRate: 15,
     activeTool: 'hand',
     measurements: [],
+    tileMode: false,
+    tileIndex: 0,
 };
 
 // ============================================================================

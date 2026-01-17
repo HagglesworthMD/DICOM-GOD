@@ -1,3 +1,22 @@
+import type { SeriesKind } from './types';
+
+/**
+ * Determine if a series kind allows stack scrolling
+ * Only STACK and MULTIFRAME are scrollable; SINGLE and UNSAFE are not
+ */
+export function isSeriesScrollable(kind: SeriesKind): boolean {
+    return kind === 'stack' || kind === 'multiframe';
+}
+
+/**
+ * Get the reason why a series is not scrollable (for tooltip display)
+ */
+export function getScrollDisabledReason(kind: SeriesKind, cineReason?: string): string | null {
+    if (kind === 'single') return 'Single-frame series';
+    if (kind === 'unsafe') return cineReason || 'Unsafe series geometry';
+    return null;
+}
+
 // Standard DICOM presets
 export const PRESETS = {
     1: { label: 'Soft Tissue', wc: 40, ww: 400 },

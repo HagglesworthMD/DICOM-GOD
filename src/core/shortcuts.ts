@@ -24,6 +24,9 @@ export type ShortcutAction =
     | 'WL_DICOM_DEFAULT'
     | 'TOGGLE_CINE'
     | 'TOGGLE_HELP'
+    | 'TOGGLE_TILE_MODE'
+    | 'PREV_TILE'
+    | 'NEXT_TILE'
     | 'CLOSE_DIALOG'
     | null;
 
@@ -46,10 +49,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     { key: '↑ / ↓', modifier: 'Shift', description: 'Jump 10 frames', category: 'navigation' },
     { key: 'Home / End', description: 'First / Last frame', category: 'navigation' },
     { key: 'Space', description: 'Play / Pause cine', category: 'navigation' },
-    { key: 'Scroll', modifier: 'Shift', description: 'Fast stack scroll', category: 'navigation' },
+    { key: 'Scroll', modifier: 'Shift', description: 'Fast stack scroll / Cycle tiles', category: 'navigation' },
     { key: 'Right-drag', description: 'Scrub frames (drag up/down)', category: 'navigation' },
     { key: 'Alt+Left-drag', description: 'Scrub frames (trackpad)', category: 'navigation' },
     { key: 'Right-drag', modifier: 'Shift', description: 'Scrub frames 5× faster', category: 'navigation' },
+    { key: '[ / ]', description: 'Previous / Next tile (contact sheet)', category: 'navigation' },
+    { key: 'T', description: 'Toggle tile mode (contact sheet)', category: 'navigation' },
 
     // Tools
     { key: 'W', description: 'Window/Level tool', category: 'tools' },
@@ -129,6 +134,12 @@ export function mapKeyToAction(e: KeyboardEvent): ShortcutAction {
         case 'F4': return 'WL_PRESET_4';
         case 'F5': return 'WL_PRESET_5';
         case 'F6': return 'WL_DICOM_DEFAULT';
+
+        // Tile mode shortcuts
+        case 't':
+        case 'T': return 'TOGGLE_TILE_MODE';
+        case '[': return 'PREV_TILE';
+        case ']': return 'NEXT_TILE';
     }
 
     return null;

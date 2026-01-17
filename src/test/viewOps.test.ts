@@ -1,6 +1,6 @@
 
 import { describe, it, expect } from 'vitest';
-import { calculateNextFrame, getPreset } from '../core/viewOps';
+import { calculateNextFrame, getPreset, isSeriesScrollable, getScrollDisabledReason } from '../core/viewOps';
 
 describe('viewOps', () => {
     describe('calculateNextFrame', () => {
@@ -36,6 +36,43 @@ describe('viewOps', () => {
 
         it('returns null for invalid key', () => {
             expect(getPreset('9')).toBeNull();
+        });
+    });
+
+    describe('isSeriesScrollable', () => {
+        it('returns true for stack series', () => {
+            expect(isSeriesScrollable('stack')).toBe(true);
+        });
+
+        it('returns true for multiframe series', () => {
+            expect(isSeriesScrollable('multiframe')).toBe(true);
+        });
+
+        it('returns false for single frame series', () => {
+            expect(isSeriesScrollable('single')).toBe(false);
+        });
+
+        it('returns false for unsafe series', () => {
+            expect(isSeriesScrollable('unsafe')).toBe(false);
+        });
+    });
+
+    describe('getScrollDisabledReason', () => {
+        it('returns reason for single frame', () => {
+            expect(getScrollDisabledReason('single')).toBe('Single-frame series');
+        });
+
+        it('returns custom cineReason for unsafe series', () => {
+            expect(getScrollDisabledReason('unsafe', 'Mixed orientations')).toBe('Mixed orientations');
+        });
+
+        it('returns fallback for unsafe series without cineReason', () => {
+            expect(getScrollDisabledReason('unsafe')).toBe('Unsafe series geometry');
+        });
+
+        it('returns null for scrollable series', () => {
+            expect(getScrollDisabledReason('stack')).toBeNull();
+            expect(getScrollDisabledReason('multiframe')).toBeNull();
         });
     });
 });
