@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { applyVOI, calculateDefaultWindow } from '../core/voi';
+import { applyVOI, applyWindowToRGBARegion, calculateDefaultWindow } from '../core/voi';
 
 describe('VOI Windowing', () => {
     describe('applyVOI', () => {
@@ -70,6 +70,44 @@ describe('VOI Windowing', () => {
         it('ensures minimum width of 1', () => {
             const result = calculateDefaultWindow(100, 100, 1, 0);
             expect(result.width).toBe(1);
+        });
+    });
+
+    describe('applyWindowToRGBARegion', () => {
+        it('windows only the specified tile region', () => {
+            const pixelData = new Uint16Array(16);
+            for (let i = 0; i < pixelData.length; i++) {
+                pixelData[i] = i;
+            }
+
+            const output = new Uint8ClampedArray(2 * 2 * 4);
+            const windowCenter = 8;
+            const windowWidth = 16;
+
+            applyWindowToRGBARegion(
+                pixelData,
+                output,
+                4,
+                4,
+                windowCenter,
+                windowWidth,
+                1,
+                0,
+                false,
+                1,
+                16,
+                false,
+                { x: 2, y: 2, w: 2, h: 2 }
+            );
+
+            const expected = [10, 11, 14, 15].map((value) => applyVOI(value, windowCenter, windowWidth));
+            for (let i = 0; i < expected.length; i++) {
+                const base = i * 4;
+                expect(output[base]).toBe(expected[i]);
+                expect(output[base + 1]).toBe(expected[i]);
+                expect(output[base + 2]).toBe(expected[i]);
+                expect(output[base + 3]).toBe(255);
+            }
         });
     });
 });

@@ -3,7 +3,7 @@
  * Renders decoded DICOM frames to canvas with VOI windowing
  */
 
-import { applyWindowToRGBA } from './voi';
+import { applyWindowToRGBA, applyWindowToRGBARegion } from './voi';
 import { computeMosaicTileRect } from './mosaic';
 import type { DecodedFrame, ViewportState, LengthMeasurement, GeometryTrustInfo } from './types';
 
@@ -58,36 +58,59 @@ export function renderFrame(
                 safeIndex
             );
         }
-        // Create image data for full frame
-        const imageData = ctx.createImageData(frame.width, frame.height);
+
+        const outputWidth = resolvedSourceRect?.w ?? frame.width;
+        const outputHeight = resolvedSourceRect?.h ?? frame.height;
+
+        // Create image data for the effective render region (tile or full frame)
+        const imageData = ctx.createImageData(outputWidth, outputHeight);
 
         // Apply windowing
         const photometric = frame.photometricInterpretation?.toUpperCase() ?? 'MONOCHROME2';
         const mono1 = photometric === 'MONOCHROME1';
         const effectiveInvert = state.invert !== mono1;
-        applyWindowToRGBA(
-            frame.pixelData,
-            imageData.data,
-            frame.width,
-            frame.height,
-            state.windowCenter,
-            state.windowWidth,
-            frame.rescaleSlope,
-            frame.rescaleIntercept,
-            effectiveInvert,
-            frame.samplesPerPixel,
-            frame.bitsStored,
-            frame.isSigned
-        );
+        if (resolvedSourceRect) {
+            // Tile-scoped windowing: apply VOI only within the cropped region
+            applyWindowToRGBARegion(
+                frame.pixelData,
+                imageData.data,
+                frame.width,
+                frame.height,
+                state.windowCenter,
+                state.windowWidth,
+                frame.rescaleSlope,
+                frame.rescaleIntercept,
+                effectiveInvert,
+                frame.samplesPerPixel,
+                frame.bitsStored,
+                frame.isSigned,
+                resolvedSourceRect
+            );
+        } else {
+            applyWindowToRGBA(
+                frame.pixelData,
+                imageData.data,
+                frame.width,
+                frame.height,
+                state.windowCenter,
+                state.windowWidth,
+                frame.rescaleSlope,
+                frame.rescaleIntercept,
+                effectiveInvert,
+                frame.samplesPerPixel,
+                frame.bitsStored,
+                frame.isSigned
+            );
+        }
 
         // Calculate display transform
         const canvasWidth = canvas.width;
         const canvasHeight = canvas.height;
 
-        const srcX = resolvedSourceRect?.x ?? 0;
-        const srcY = resolvedSourceRect?.y ?? 0;
-        const srcW = resolvedSourceRect?.w ?? frame.width;
-        const srcH = resolvedSourceRect?.h ?? frame.height;
+        const srcX = 0;
+        const srcY = 0;
+        const srcW = outputWidth;
+        const srcH = outputHeight;
 
         // Fit to canvas while maintaining aspect ratio
         const imageAspect = srcW / srcH;
@@ -117,7 +140,7 @@ export function renderFrame(
         ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
         // Create temporary canvas for the image
-        const tempCanvas = new OffscreenCanvas(frame.width, frame.height);
+        const tempCanvas = new OffscreenCanvas(outputWidth, outputHeight);
         const tempCtx = tempCanvas.getContext('2d');
         if (!tempCtx) {
             return { success: false, error: 'Failed to create temp context' };
