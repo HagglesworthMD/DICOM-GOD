@@ -26,6 +26,7 @@ import { resolveFrameAuthority } from '../core/frameAuthority';
 import { classifySeriesSemantics } from '../core/seriesSemantics';
 import { computePercentileWindow, toModalityValue } from '../core/voiLut';
 import { getSeriesWindowDefault, setSeriesWindowDefault } from '../core/seriesWindowCache';
+import { computeMosaicTileRect, resolveMosaicGrid } from '../core/mosaic';
 
 /** Imperative handle exposed by DicomViewer for external action routing */
 export interface DicomViewerHandle {
@@ -306,8 +307,14 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             ? (instances[0].numberOfFrames ?? 1)
             : instances.length;
 
-        const tileCount = contactSheet?.tiles.length ?? 0;
-        const mosaicActive = tileCount > 0 && baseTotalFrames === 1;
+        const contactSheetTileCount = contactSheet?.tiles.length ?? 0;
+        const mosaicGrid = resolveMosaicGrid(
+            contactSheetTileCount,
+            contactSheet?.grid.rows,
+            contactSheet?.grid.cols
+        );
+        const tileCount = mosaicGrid?.tileCount ?? 0;
+        const mosaicActive = !!mosaicGrid && baseTotalFrames === 1;
         const tileSteppingOn = mosaicActive && tileSteppingEnabled;
         const totalFrames = baseTotalFrames;
         const effectiveStackLike = mosaicActive ? tileSteppingOn : stackLike;
@@ -326,7 +333,9 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         const cineReason = mosaicActive
             ? (tileSteppingOn ? (tileCount > 1 ? undefined : 'Only one mosaic tile') : 'Mosaic tiles are not acquisition frames')
             : seriesCineReason;
-        const mosaicTooltip = 'This is a single image containing multiple tiles. Tiles are not acquisition frames.';
+        const mosaicTooltip = mosaicGrid?.assumedGrid
+            ? `This is a single image containing multiple tiles. Tiles are not acquisition frames. Grid inferred: ${mosaicGrid.rows}×${mosaicGrid.cols}.`
+            : 'This is a single image containing multiple tiles. Tiles are not acquisition frames.';
         const mosaicMeasurementAllowed = !mosaicActive
             || (series.geometryTrustInfo?.spacingSource === 'PixelSpacing'
                 && (series.geometryTrustInfo.level === 'verified' || series.geometryTrustInfo.level === 'trusted'));
@@ -336,41 +345,44 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
         const resolveRenderSource = useCallback((frame: DecodedFrame | null) => {
             if (!frame) return null;
-            if (!mosaicActive || !contactSheet) {
+            if (!mosaicActive || !mosaicGrid) {
                 return {
                     frame,
-                    sourceRect: null,
+                    mosaic: null,
                     width: frame.width,
                     height: frame.height,
                     tileInfo: undefined,
                 };
             }
 
-            const safeIndex = Math.min(tileIndex, contactSheet.tiles.length - 1);
-            const tile = contactSheet.tiles[safeIndex] ?? contactSheet.tiles[0];
-            if (!tile) {
-                return {
-                    frame,
-                    sourceRect: null,
-                    width: frame.width,
-                    height: frame.height,
-                    tileInfo: undefined,
-                };
-            }
+            const safeIndex = Math.min(tileIndex, mosaicGrid.tileCount - 1);
+            const rect = computeMosaicTileRect(
+                frame.width,
+                frame.height,
+                mosaicGrid.rows,
+                mosaicGrid.cols,
+                safeIndex
+            );
 
             return {
                 frame,
-                sourceRect: tile,
-                width: tile.w,
-                height: tile.h,
+                mosaic: {
+                    rows: mosaicGrid.rows,
+                    cols: mosaicGrid.cols,
+                    tileIndex: safeIndex,
+                    tileCount: mosaicGrid.tileCount,
+                    assumedGrid: mosaicGrid.assumedGrid,
+                },
+                width: rect.w,
+                height: rect.h,
                 tileInfo: {
                     tileIndex: safeIndex,
-                    tileCount: contactSheet.tiles.length,
-                    grid: contactSheet.grid,
-                    kind: contactSheet.kind,
+                    tileCount: mosaicGrid.tileCount,
+                    grid: { rows: mosaicGrid.rows, cols: mosaicGrid.cols },
+                    kind: contactSheet?.kind ?? 'heuristic',
                 },
             };
-        }, [mosaicActive, contactSheet, tileIndex]);
+        }, [mosaicActive, mosaicGrid, tileIndex, contactSheet]);
 
         useEffect(() => {
             if (!mosaicActive) {
@@ -797,7 +809,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             }
 
             // Render the frame (current or last good)
-            renderFrame(canvas, renderSource.frame, viewState, renderSource.sourceRect ?? undefined);
+            renderFrame(canvas, renderSource.frame, viewState, { mosaic: renderSource.mosaic });
             hasRenderedFrameRef.current = true;
 
             // Compute image-to-canvas transform for measurements

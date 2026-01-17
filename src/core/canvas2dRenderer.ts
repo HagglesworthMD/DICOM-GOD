@@ -4,6 +4,7 @@
  */
 
 import { applyWindowToRGBA } from './voi';
+import { computeMosaicTileRect } from './mosaic';
 import type { DecodedFrame, ViewportState, LengthMeasurement, GeometryTrustInfo } from './types';
 
 export interface RenderResult {
@@ -18,6 +19,19 @@ export interface SourceRect {
     h: number;
 }
 
+export interface MosaicRenderInfo {
+    rows: number;
+    cols: number;
+    tileIndex: number;
+    tileCount: number;
+    assumedGrid?: boolean;
+}
+
+export interface RenderOptions {
+    sourceRect?: SourceRect | null;
+    mosaic?: MosaicRenderInfo | null;
+}
+
 /**
  * Render a decoded frame to a canvas
  */
@@ -25,7 +39,7 @@ export function renderFrame(
     canvas: HTMLCanvasElement,
     frame: DecodedFrame,
     state: ViewportState,
-    sourceRect?: SourceRect | null
+    options?: RenderOptions
 ): RenderResult {
     const ctx = canvas.getContext('2d');
     if (!ctx) {
@@ -33,6 +47,17 @@ export function renderFrame(
     }
 
     try {
+        let resolvedSourceRect = options?.sourceRect ?? null;
+        if (options?.mosaic) {
+            const safeIndex = Math.max(0, Math.min(options.mosaic.tileIndex, options.mosaic.tileCount - 1));
+            resolvedSourceRect = computeMosaicTileRect(
+                frame.width,
+                frame.height,
+                options.mosaic.rows,
+                options.mosaic.cols,
+                safeIndex
+            );
+        }
         // Create image data for full frame
         const imageData = ctx.createImageData(frame.width, frame.height);
 
@@ -59,10 +84,10 @@ export function renderFrame(
         const canvasWidth = canvas.width;
         const canvasHeight = canvas.height;
 
-        const srcX = sourceRect?.x ?? 0;
-        const srcY = sourceRect?.y ?? 0;
-        const srcW = sourceRect?.w ?? frame.width;
-        const srcH = sourceRect?.h ?? frame.height;
+        const srcX = resolvedSourceRect?.x ?? 0;
+        const srcY = resolvedSourceRect?.y ?? 0;
+        const srcW = resolvedSourceRect?.w ?? frame.width;
+        const srcH = resolvedSourceRect?.h ?? frame.height;
 
         // Fit to canvas while maintaining aspect ratio
         const imageAspect = srcW / srcH;
