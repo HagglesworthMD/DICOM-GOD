@@ -21,6 +21,7 @@ import './Viewport.css';
 import type { ShortcutAction } from '../core/shortcuts';
 import { calculateNextFrame } from '../core/viewOps';
 import { PRESET_LIST, formatWl, getPresetById } from '../core/wlPresets';
+import { calculateScrubFrameIndex } from '../core/stackScrub';
 import { resolveFrameAuthority } from '../core/frameAuthority';
 
 /** Imperative handle exposed by DicomViewer for external action routing */
@@ -129,7 +130,8 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         const [missingPermission, setMissingPermission] = useState(false);
         const [waitingForFiles, setWaitingForFiles] = useState(false);
         const cineIntervalRef = useRef<number | null>(null);
-        const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | 'zoom' | 'measure' | null }>({ startX: 0, startY: 0, mode: null });
+        const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | 'zoom' | 'measure' | 'scrub' | null }>({ startX: 0, startY: 0, mode: null });
+        const scrubRef = useRef<{ startFrame: number; startY: number; wasPlaying: boolean }>({ startFrame: 0, startY: 0, wasPlaying: false });
         const wheelAccumulator = useRef(0);
         const activeRequestId = useRef(0);
 
@@ -915,17 +917,27 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             }
 
             // Fallback: modifier-based modes (for hand tool or no specific tool)
-            if (e.button === 0 && (e.altKey || e.ctrlKey)) {
-                // Window/Level
-                dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'wl' };
-            } else if (e.button === 2 || (e.button === 0 && e.shiftKey)) {
-                // Window/Level (right click)
+            // Right-click or Alt+Left: Stack scrub (drag up/down to scroll frames)
+            if (e.button === 2 || (e.button === 0 && e.altKey)) {
+                // Start scrub mode
+                scrubRef.current = {
+                    startFrame: viewState.frameIndex,
+                    startY: e.clientY,
+                    wasPlaying: viewState.isPlaying
+                };
+                // Pause cine while scrubbing
+                if (viewState.isPlaying) {
+                    toggleCine();
+                }
+                dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'scrub' };
+            } else if (e.button === 0 && e.ctrlKey) {
+                // Ctrl+Left: Window/Level
                 dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'wl' };
             } else if (e.button === 0 || e.button === 1) {
-                // Pan
+                // Left or Middle: Pan
                 dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'pan' };
             }
-        }, [viewState.activeTool, viewState.isPlaying, preferences.pauseCineOnMeasure, canvasToImageCoords, toggleCine]);
+        }, [viewState.activeTool, viewState.isPlaying, viewState.frameIndex, preferences.pauseCineOnMeasure, canvasToImageCoords, toggleCine]);
 
         const handleMouseMove = useCallback((e: React.MouseEvent) => {
             if (!dragRef.current.mode) return;
@@ -963,11 +975,26 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     ...prev,
                     zoom: Math.max(0.1, Math.min(10, prev.zoom * zoomDelta)),
                 }));
+            } else if (dragRef.current.mode === 'scrub') {
+                // Stack scrub: use absolute Y from start, not delta
+                const newIndex = calculateScrubFrameIndex(
+                    scrubRef.current.startFrame,
+                    scrubRef.current.startY,
+                    e.clientY,
+                    instances.length,
+                    e.shiftKey
+                );
+                setViewState(prev => ({
+                    ...prev,
+                    frameIndex: newIndex,
+                }));
+                // Don't update startY for scrub - we use absolute position
+                return;
             }
 
             dragRef.current.startX = e.clientX;
             dragRef.current.startY = e.clientY;
-        }, [canvasToImageCoords]);
+        }, [canvasToImageCoords, instances.length]);
 
         const handleMouseUp = useCallback(() => {
             // Commit measurement if we were drawing one
@@ -990,8 +1017,14 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 }
                 measureRef.current = null;
             }
+
+            // Resume cine if it was playing before scrub started
+            if (dragRef.current.mode === 'scrub' && scrubRef.current.wasPlaying && canCine) {
+                toggleCine();
+            }
+
             dragRef.current.mode = null;
-        }, []);
+        }, [canCine, toggleCine]);
 
         const handleContextMenu = useCallback((e: React.MouseEvent) => {
             e.preventDefault();

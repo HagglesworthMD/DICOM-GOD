@@ -47,6 +47,9 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     { key: 'Home / End', description: 'First / Last frame', category: 'navigation' },
     { key: 'Space', description: 'Play / Pause cine', category: 'navigation' },
     { key: 'Scroll', modifier: 'Shift', description: 'Fast stack scroll', category: 'navigation' },
+    { key: 'Right-drag', description: 'Scrub frames (drag up/down)', category: 'navigation' },
+    { key: 'Alt+Left-drag', description: 'Scrub frames (trackpad)', category: 'navigation' },
+    { key: 'Right-drag', modifier: 'Shift', description: 'Scrub frames 5× faster', category: 'navigation' },
 
     // Tools
     { key: 'W', description: 'Window/Level tool', category: 'tools' },
