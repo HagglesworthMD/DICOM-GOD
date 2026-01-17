@@ -197,6 +197,8 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         const [viewState, setViewState] = useState<ViewportState>(DEFAULT_STATE);
         const [currentFrame, setCurrentFrame] = useState<DecodedFrame | null>(null);
         const [contactSheet, setContactSheet] = useState<ContactSheet | null>(null);
+        const [tileSteppingEnabled, setTileSteppingEnabled] = useState(false);
+        const [tileIndex, setTileIndex] = useState(0);
         const [isBuffering, setIsBuffering] = useState(false);
         const [loading, setLoading] = useState(true);
         const [error, setError] = useState<string | null>(null);
@@ -234,6 +236,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         // Time-based cine state
         const cineStartTimeRef = useRef(0);
         const cineStartIndexRef = useRef(0);
+        const tileCineStartIndexRef = useRef(0);
 
         // Track if we've successfully rendered at least one frame (for safe cine overlay suppression)
         const hasRenderedFrameRef = useRef(false);
@@ -262,6 +265,8 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             });
             setCurrentFrame(null);
             setContactSheet(null);
+            setTileSteppingEnabled(false);
+            setTileIndex(0);
             setLoading(true);
             setError(null);
             setWindowingSource('dicom');
@@ -285,9 +290,8 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         const semantics = classifySeriesSemantics(instances);
         const hasMultiframe = series.hasMultiframe ?? semantics.hasMultiframe;
         const stackLike = series.stackLike ?? semantics.stackLike;
-        // Use series classification from metadata worker
-        const canCine = series.cineEligible;
-        const cineReason = series.cineReason;
+        const seriesCanCine = series.cineEligible;
+        const seriesCineReason = series.cineReason;
 
         // ============================================================================
         // Frame Resolution for STACK vs MULTIFRAME
@@ -302,12 +306,13 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             ? (instances[0].numberOfFrames ?? 1)
             : instances.length;
 
-        const contactSheetTiles = contactSheet?.tiles.length ?? 0;
-        const contactSheetActive = contactSheetTiles > 0 && baseTotalFrames === 1;
-        const totalFrames = contactSheetActive ? contactSheetTiles : baseTotalFrames;
-        const effectiveStackLike = contactSheetActive ? true : stackLike;
+        const tileCount = contactSheet?.tiles.length ?? 0;
+        const mosaicActive = tileCount > 0 && baseTotalFrames === 1;
+        const tileSteppingOn = mosaicActive && tileSteppingEnabled;
+        const totalFrames = baseTotalFrames;
+        const effectiveStackLike = mosaicActive ? tileSteppingOn : stackLike;
 
-        const currentInstance = contactSheetActive
+        const currentInstance = mosaicActive
             ? instances[0]
             : isMultiframe
                 ? instances[0]  // Multiframe: always the first (and usually only) instance
@@ -317,9 +322,21 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             ? viewState.frameIndex  // Multiframe: frameIndex is the frame within the file
             : 0;  // Stack: always frame 0 within each instance file
 
+        const canCine = mosaicActive ? (tileSteppingOn && tileCount > 1) : seriesCanCine;
+        const cineReason = mosaicActive
+            ? (tileSteppingOn ? (tileCount > 1 ? undefined : 'Only one mosaic tile') : 'Mosaic tiles are not acquisition frames')
+            : seriesCineReason;
+        const mosaicTooltip = 'This is a single image containing multiple tiles. Tiles are not acquisition frames.';
+        const mosaicMeasurementAllowed = !mosaicActive
+            || (series.geometryTrustInfo?.spacingSource === 'PixelSpacing'
+                && (series.geometryTrustInfo.level === 'verified' || series.geometryTrustInfo.level === 'trusted'));
+        const mosaicMeasurementWarning = mosaicActive && !mosaicMeasurementAllowed
+            ? 'Measurements disabled: spacing untrusted for mosaic tiles'
+            : null;
+
         const resolveRenderSource = useCallback((frame: DecodedFrame | null) => {
             if (!frame) return null;
-            if (!contactSheetActive || !contactSheet) {
+            if (!mosaicActive || !contactSheet) {
                 return {
                     frame,
                     sourceRect: null,
@@ -329,7 +346,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 };
             }
 
-            const safeIndex = Math.min(viewState.frameIndex, contactSheet.tiles.length - 1);
+            const safeIndex = Math.min(tileIndex, contactSheet.tiles.length - 1);
             const tile = contactSheet.tiles[safeIndex] ?? contactSheet.tiles[0];
             if (!tile) {
                 return {
@@ -353,7 +370,31 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     kind: contactSheet.kind,
                 },
             };
-        }, [contactSheetActive, contactSheet, viewState.frameIndex]);
+        }, [mosaicActive, contactSheet, tileIndex]);
+
+        useEffect(() => {
+            if (!mosaicActive) {
+                if (tileIndex !== 0) setTileIndex(0);
+                if (tileSteppingEnabled) setTileSteppingEnabled(false);
+                return;
+            }
+            const maxIndex = Math.max(0, tileCount - 1);
+            if (tileIndex > maxIndex) {
+                setTileIndex(maxIndex);
+            }
+        }, [mosaicActive, tileCount, tileIndex, tileSteppingEnabled]);
+
+        useEffect(() => {
+            if (mosaicActive && viewState.frameIndex !== 0) {
+                setViewState(prev => ({ ...prev, frameIndex: 0 }));
+            }
+        }, [mosaicActive, viewState.frameIndex]);
+
+        useEffect(() => {
+            if (mosaicActive && !mosaicMeasurementAllowed && viewState.activeTool === 'length') {
+                setViewState(prev => ({ ...prev, activeTool: 'hand' }));
+            }
+        }, [mosaicActive, mosaicMeasurementAllowed, viewState.activeTool]);
 
         const resolveWindowDefaults = useCallback((frame: DecodedFrame | null) => {
             if (!frame) {
@@ -856,6 +897,9 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     // Time-based cine: record start time and index
                     cineStartTimeRef.current = performance.now();
                     cineStartIndexRef.current = prev.frameIndex;
+                    if (mosaicActive && tileSteppingOn) {
+                        tileCineStartIndexRef.current = tileIndex;
+                    }
                 } else {
                     // Stop cine - clear timing refs
                     cineStartTimeRef.current = 0;
@@ -864,7 +908,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
                 return { ...prev, isPlaying: newPlaying };
             });
-        }, [canCine]);
+        }, [canCine, mosaicActive, tileSteppingOn, tileIndex]);
 
         // Cine loop effect - manages the interval based on isPlaying state
         useEffect(() => {
@@ -909,6 +953,15 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 // Strict token check to prevent phantom steps after series switch
                 if (activeSeriesTokenRef.current !== token) return;
 
+                if (mosaicActive && tileSteppingOn) {
+                    if (tileCount <= 1) return;
+                    const elapsed = performance.now() - cineStartTimeRef.current;
+                    const framesSinceStart = Math.floor(elapsed / frameDurationMs);
+                    const targetIndex = (tileCineStartIndexRef.current + framesSinceStart) % tileCount;
+                    setTileIndex(prev => (prev === targetIndex ? prev : targetIndex));
+                    return;
+                }
+
                 setViewState(p => {
                     // CRITICAL: Hard guard - do NOT advance if not playing
                     if (!p.isPlaying) return p;
@@ -930,7 +983,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     cineIntervalRef.current = null;
                 }
             };
-        }, [viewState.isPlaying, viewState.cineFrameRate, instances, runPrefetchPump, canCine]);
+        }, [viewState.isPlaying, viewState.cineFrameRate, instances, runPrefetchPump, canCine, mosaicActive, tileSteppingOn, tileCount, totalFrames]);
 
         // Mouse handlers
         // Native wheel handler for non-passive prevention (stack scroll)
@@ -941,9 +994,6 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             const onWheel = (e: WheelEvent) => {
                 e.preventDefault();
 
-                // Guard: Single frame series should not scroll (stops 1-frame jitter)
-                if (!effectiveStackLike || totalFrames <= 1) return;
-
                 if (e.ctrlKey || e.metaKey) {
                     // Zoom
                     const delta = e.deltaY > 0 ? 0.9 : 1.1;
@@ -951,7 +1001,36 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                         ...prev,
                         zoom: Math.max(0.1, Math.min(10, prev.zoom * delta)),
                     }));
-                } else {
+                    return;
+                }
+
+                if (mosaicActive) {
+                    if (!tileSteppingOn || tileCount <= 1) return;
+
+                    const fastMode = e.shiftKey;
+                    const fineMode = e.altKey;
+                    const threshold = fineMode ? 20 : 40;
+                    const multiplier = fastMode ? 5 : 1;
+
+                    wheelAccumulator.current += e.deltaY;
+
+                    if (Math.abs(wheelAccumulator.current) >= threshold) {
+                        const rawSteps = Math.trunc(wheelAccumulator.current / threshold);
+                        wheelAccumulator.current %= threshold;
+
+                        if (rawSteps !== 0) {
+                            const steps = rawSteps * multiplier;
+                            lastNavDirRef.current = steps > 0 ? 1 : -1;
+                            setTileIndex(prev => Math.max(0, Math.min(tileCount - 1, prev + steps)));
+                        }
+                    }
+                    return;
+                }
+
+                // Guard: Single frame series should not scroll (stops 1-frame jitter)
+                if (!effectiveStackLike || totalFrames <= 1) return;
+
+                {
                     // Stack scroll with modifier support
                     // Shift = fast (5 frames), Alt = fine (1 frame with lower threshold)
                     const fastMode = e.shiftKey;
@@ -985,7 +1064,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             // Reset accumulator when series changes to prevent jump
             wheelAccumulator.current = 0;
             return () => container.removeEventListener('wheel', onWheel);
-        }, [series.seriesInstanceUid, effectiveStackLike, totalFrames, stackReverse]);
+        }, [series.seriesInstanceUid, effectiveStackLike, mosaicActive, tileSteppingOn, tileCount, totalFrames, stackReverse]);
 
         // Imperative action handler for external routing (from MultiViewport)
         const applyAction = useCallback((action: ShortcutAction) => {
@@ -996,33 +1075,57 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     toggleCine();
                     break;
                 case 'PREV_FRAME':
+                    if (mosaicActive && tileSteppingOn) {
+                        setTileIndex(prev => Math.max(0, prev - 1));
+                        break;
+                    }
                     setViewState(prev => ({
                         ...prev,
                         frameIndex: calculateNextFrame(prev.frameIndex, totalFrames, -1, stackReverse)
                     }));
                     break;
                 case 'NEXT_FRAME':
+                    if (mosaicActive && tileSteppingOn) {
+                        setTileIndex(prev => Math.min(tileCount - 1, prev + 1));
+                        break;
+                    }
                     setViewState(prev => ({
                         ...prev,
                         frameIndex: calculateNextFrame(prev.frameIndex, totalFrames, 1, stackReverse)
                     }));
                     break;
                 case 'JUMP_BACK_10':
+                    if (mosaicActive && tileSteppingOn) {
+                        setTileIndex(prev => Math.max(0, prev - 10));
+                        break;
+                    }
                     setViewState(prev => ({
                         ...prev,
                         frameIndex: calculateNextFrame(prev.frameIndex, totalFrames, -10, stackReverse)
                     }));
                     break;
                 case 'JUMP_FWD_10':
+                    if (mosaicActive && tileSteppingOn) {
+                        setTileIndex(prev => Math.min(tileCount - 1, prev + 10));
+                        break;
+                    }
                     setViewState(prev => ({
                         ...prev,
                         frameIndex: calculateNextFrame(prev.frameIndex, totalFrames, 10, stackReverse)
                     }));
                     break;
                 case 'FIRST_FRAME':
+                    if (mosaicActive && tileSteppingOn) {
+                        setTileIndex(0);
+                        break;
+                    }
                     setViewState(prev => ({ ...prev, frameIndex: 0 }));
                     break;
                 case 'LAST_FRAME':
+                    if (mosaicActive && tileSteppingOn) {
+                        setTileIndex(Math.max(0, tileCount - 1));
+                        break;
+                    }
                     setViewState(prev => ({ ...prev, frameIndex: totalFrames - 1 }));
                     break;
                 case 'RESET':
@@ -1052,6 +1155,13 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     setViewState(prev => ({ ...prev, activeTool: 'zoom' }));
                     break;
                 case 'MEASURE_TOOL':
+                    if (!mosaicMeasurementAllowed) {
+                        dispatch({
+                            type: 'SET_STATUS',
+                            message: mosaicMeasurementWarning || 'Measurements disabled'
+                        });
+                        break;
+                    }
                     setViewState(prev => ({ ...prev, activeTool: 'length' }));
                     break;
                 case 'WL_PRESET_1':
@@ -1099,7 +1209,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     dispatch({ type: 'SET_SHORTCUTS_VISIBLE', visible: true });
                     break;
             }
-        }, [totalFrames, stackReverse, toggleCine, dispatch, currentFrame]);
+        }, [totalFrames, stackReverse, toggleCine, dispatch, currentFrame, mosaicActive, tileSteppingOn, tileCount, mosaicMeasurementAllowed, mosaicMeasurementWarning]);
 
         // Expose imperative handle for external action routing
         useImperativeHandle(ref, () => ({
@@ -1157,6 +1267,13 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         const handleMouseDown = useCallback((e: React.MouseEvent) => {
             // Measurement tool (length) takes priority on left click
             if (viewState.activeTool === 'length' && e.button === 0 && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+                if (!mosaicMeasurementAllowed) {
+                    dispatch({
+                        type: 'SET_STATUS',
+                        message: mosaicMeasurementWarning || 'Measurements disabled'
+                    });
+                    return;
+                }
 
                 // Optional: Pause cine when drawing measurements
                 if (preferences.pauseCineOnMeasure && viewState.isPlaying) {
@@ -1192,9 +1309,15 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             // Fallback: modifier-based modes (for hand tool or no specific tool)
             // Right-click or Alt+Left: Stack scrub (drag up/down to scroll frames)
             if (e.button === 2 || (e.button === 0 && e.altKey)) {
+                if (mosaicActive && (!tileSteppingOn || tileCount <= 1)) {
+                    return;
+                }
+                const scrubTotal = mosaicActive ? tileCount : totalFrames;
+                if (scrubTotal <= 1) return;
+                const scrubStart = mosaicActive ? tileIndex : viewState.frameIndex;
                 // Start scrub mode
                 scrubRef.current = {
-                    startFrame: viewState.frameIndex,
+                    startFrame: scrubStart,
                     startY: e.clientY,
                     wasPlaying: viewState.isPlaying
                 };
@@ -1210,7 +1333,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 // Left or Middle: Pan
                 dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'pan' };
             }
-        }, [viewState.activeTool, viewState.isPlaying, viewState.frameIndex, preferences.pauseCineOnMeasure, canvasToImageCoords, toggleCine]);
+        }, [viewState.activeTool, viewState.isPlaying, viewState.frameIndex, preferences.pauseCineOnMeasure, canvasToImageCoords, toggleCine, mosaicActive, tileSteppingOn, tileCount, totalFrames, tileIndex, mosaicMeasurementAllowed, mosaicMeasurementWarning, dispatch]);
 
         const handleMouseMove = useCallback((e: React.MouseEvent) => {
             if (!dragRef.current.mode) return;
@@ -1251,24 +1374,30 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 }));
             } else if (dragRef.current.mode === 'scrub') {
                 // Stack scrub: use absolute Y from start, not delta
+                const scrubTotal = mosaicActive ? tileCount : totalFrames;
+                if (scrubTotal <= 1) return;
                 const newIndex = calculateScrubFrameIndex(
                     scrubRef.current.startFrame,
                     scrubRef.current.startY,
                     e.clientY,
-                    totalFrames,
+                    scrubTotal,
                     e.shiftKey
                 );
-                setViewState(prev => ({
-                    ...prev,
-                    frameIndex: newIndex,
-                }));
+                if (mosaicActive) {
+                    setTileIndex(newIndex);
+                } else {
+                    setViewState(prev => ({
+                        ...prev,
+                        frameIndex: newIndex,
+                    }));
+                }
                 // Don't update startY for scrub - we use absolute position
                 return;
             }
 
             dragRef.current.startX = e.clientX;
             dragRef.current.startY = e.clientY;
-        }, [canvasToImageCoords, totalFrames]);
+        }, [canvasToImageCoords, mosaicActive, tileCount, totalFrames]);
 
         const handleMouseUp = useCallback(() => {
             // Commit measurement if we were drawing one
@@ -1337,11 +1466,15 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                         </button>
                         <button
                             onClick={() => setViewState(prev => ({ ...prev, activeTool: 'length' }))}
-                            title="Length Tool (M) - Measure Distance"
+                            title={mosaicMeasurementAllowed
+                                ? 'Length Tool (M) - Measure Distance'
+                                : mosaicMeasurementWarning || 'Measurements disabled'}
+                            disabled={!mosaicMeasurementAllowed}
                             style={{
                                 fontWeight: viewState.activeTool === 'length' ? 'bold' : 'normal',
                                 background: viewState.activeTool === 'length' ? 'var(--color-surface-hover)' : undefined,
-                                borderColor: viewState.activeTool === 'length' ? 'var(--color-primary)' : undefined
+                                borderColor: viewState.activeTool === 'length' ? 'var(--color-primary)' : undefined,
+                                opacity: mosaicMeasurementAllowed ? 1 : 0.5
                             }}
                         >
                             📏
@@ -1386,6 +1519,29 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                         >
                             ⇅
                         </button>
+                        {mosaicActive && (
+                            <button
+                                onClick={() => {
+                                    setTileSteppingEnabled(prev => {
+                                        const next = !prev;
+                                        dispatch({
+                                            type: 'SET_STATUS',
+                                            message: `Tile stepping ${next ? 'enabled' : 'disabled'}`
+                                        });
+                                        return next;
+                                    });
+                                }}
+                                title={`${mosaicTooltip} Step tiles to navigate within the mosaic.`}
+                                style={{
+                                    color: tileSteppingOn ? '#4f4' : 'inherit',
+                                    background: tileSteppingOn ? 'var(--color-surface-hover)' : undefined,
+                                    borderColor: tileSteppingOn ? '#4f4' : undefined,
+                                    fontSize: '0.85em'
+                                }}
+                            >
+                                Step tiles
+                            </button>
+                        )}
                         <button onClick={() => setViewState(prev => ({ ...prev, invert: !prev.invert }))} title="Invert (I)">
                             ◐
                         </button>
@@ -1452,6 +1608,14 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
                 <div className="dicom-viewer__status">
                     <span>Frame: {viewState.frameIndex + 1}/{totalFrames}</span>
+                    {mosaicActive && (
+                        <span title={mosaicTooltip}>MOSAIC / CONTACT SHEET tile {tileIndex + 1}/{tileCount}</span>
+                    )}
+                    {mosaicMeasurementWarning && (
+                        <span title={mosaicMeasurementWarning} style={{ color: '#fc4' }}>
+                            ⚠ measure off
+                        </span>
+                    )}
                     <span>WC/WW: {Math.round(viewState.windowCenter)}/{Math.round(viewState.windowWidth)}</span>
                     {windowingSource === 'assumed' && (
                         <span

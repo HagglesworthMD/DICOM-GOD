@@ -230,7 +230,7 @@ export function drawOverlay(
     // Add tile info if in tile mode
     if (info.tileInfo) {
         const trustIcon = info.tileInfo.kind === 'usRegions' ? '🟢' : '🟡';
-        frameText += ` | Tile ${info.tileInfo.tileIndex + 1}/${info.tileInfo.tileCount} ${trustIcon} ${info.tileInfo.grid.cols}×${info.tileInfo.grid.rows}`;
+        frameText += ` | MOSAIC / CONTACT SHEET tile ${info.tileInfo.tileIndex + 1}/${info.tileInfo.tileCount} ${trustIcon} ${info.tileInfo.grid.cols}×${info.tileInfo.grid.rows}`;
     }
 
     if (info.cineInfo) {
