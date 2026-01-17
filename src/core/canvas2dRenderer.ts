@@ -4,15 +4,14 @@
  */
 
 import { applyWindowToRGBA } from './voi';
-import type { DecodedFrame, ViewportState, LengthMeasurement, GeometryTrustInfo, ContactSheetTile } from './types';
+import type { DecodedFrame, ViewportState, LengthMeasurement, GeometryTrustInfo } from './types';
 
 export interface RenderResult {
     success: boolean;
     error?: string;
 }
 
-/** Optional crop rectangle for tile mode rendering */
-export interface CropRect {
+export interface SourceRect {
     x: number;
     y: number;
     w: number;
@@ -21,13 +20,12 @@ export interface CropRect {
 
 /**
  * Render a decoded frame to a canvas
- * @param cropRect Optional crop region for tile mode (renders only this portion)
  */
 export function renderFrame(
     canvas: HTMLCanvasElement,
     frame: DecodedFrame,
     state: ViewportState,
-    cropRect?: CropRect | ContactSheetTile | null
+    sourceRect?: SourceRect | null
 ): RenderResult {
     const ctx = canvas.getContext('2d');
     if (!ctx) {
@@ -61,11 +59,10 @@ export function renderFrame(
         const canvasWidth = canvas.width;
         const canvasHeight = canvas.height;
 
-        // Source region (full frame or crop)
-        const srcX = cropRect?.x ?? 0;
-        const srcY = cropRect?.y ?? 0;
-        const srcW = cropRect?.w ?? frame.width;
-        const srcH = cropRect?.h ?? frame.height;
+        const srcX = sourceRect?.x ?? 0;
+        const srcY = sourceRect?.y ?? 0;
+        const srcW = sourceRect?.w ?? frame.width;
+        const srcH = sourceRect?.h ?? frame.height;
 
         // Fit to canvas while maintaining aspect ratio
         const imageAspect = srcW / srcH;
@@ -107,10 +104,10 @@ export function renderFrame(
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
 
-        // Use drawImage with source rect for cropping
+        // Use drawImage with source rect for full-frame draw
         ctx.drawImage(
             tempCanvas,
-            srcX, srcY, srcW, srcH,  // Source rectangle (crop region)
+            srcX, srcY, srcW, srcH,  // Source rectangle
             x, y, displayWidth, displayHeight  // Destination rectangle
         );
 

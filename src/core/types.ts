@@ -182,6 +182,8 @@ export interface DecodedFrame {
     photometricInterpretation: string;
     /** Samples per pixel (1=grayscale, 3=RGB) */
     samplesPerPixel: number;
+    /** Contact sheet metadata if frame is a pre-tiled mosaic */
+    contactSheet?: ContactSheet;
 }
 
 /** Supported transfer syntaxes */

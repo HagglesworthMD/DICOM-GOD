@@ -5,8 +5,9 @@
  */
 
 import { decodeRLE, rleToTypedArray } from './rleDecoder';
+import { detectContactSheetHeuristic } from './contactSheet';
 import { SUPPORTED_TRANSFER_SYNTAXES, isTransferSyntaxSupported } from './types';
-import type { DecodedFrame } from './types';
+import type { ContactSheet, DecodedFrame } from './types';
 import { parseWindowMultiValue, parseWindowValue, selectWindowValue } from './voiLut';
 
 // DICOM Tags
@@ -115,7 +116,7 @@ export async function decodePixelData(
     const ww = selectWindowValue(info.windowWidthValues ?? null, frameNumber, info.numberOfFrames) ?? 0;
     const windowProvided = Number.isFinite(wc) && Number.isFinite(ww) && ww > 0;
 
-    return {
+    const frame: DecodedFrame = {
         pixelData,
         width: info.columns,
         height: info.rows,
@@ -131,6 +132,25 @@ export async function decodePixelData(
         photometricInterpretation: info.photometricInterpretation,
         samplesPerPixel: info.samplesPerPixel,
     };
+
+    let contactSheet: ContactSheet | null = null;
+    if (info.numberOfFrames <= 1) {
+        contactSheet = detectContactSheetHeuristic(frame);
+        if (contactSheet && import.meta.env.DEV) {
+            console.warn('[pixelDecoder] contact sheet detected', {
+                width: frame.width,
+                height: frame.height,
+                grid: contactSheet.grid,
+                reason: contactSheet.reason,
+            });
+        }
+    }
+
+    if (contactSheet) {
+        frame.contactSheet = contactSheet;
+    }
+
+    return frame;
 }
 
 /**
