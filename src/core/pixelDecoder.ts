@@ -7,6 +7,7 @@
 import { decodeRLE, rleToTypedArray } from './rleDecoder';
 import { SUPPORTED_TRANSFER_SYNTAXES, isTransferSyntaxSupported } from './types';
 import type { DecodedFrame } from './types';
+import { parseWindowMultiValue, parseWindowValue, selectWindowValue } from './voiLut';
 
 // DICOM Tags
 const TAGS = {
@@ -40,6 +41,8 @@ interface ParsedPixelInfo {
     photometricInterpretation: string;
     windowCenter: number;
     windowWidth: number;
+    windowCenterValues?: number[] | null;
+    windowWidthValues?: number[] | null;
     rescaleSlope: number;
     rescaleIntercept: number;
     numberOfFrames: number;
@@ -108,15 +111,9 @@ export async function decodePixelData(
         if (v > maxValue) maxValue = v;
     }
 
-    // Default window if not specified
-    let wc = info.windowCenter;
-    let ww = info.windowWidth;
-    if (ww === 0) {
-        const min = minValue * info.rescaleSlope + info.rescaleIntercept;
-        const max = maxValue * info.rescaleSlope + info.rescaleIntercept;
-        wc = (min + max) / 2;
-        ww = Math.max(1, max - min);
-    }
+    const wc = selectWindowValue(info.windowCenterValues ?? null, frameNumber, info.numberOfFrames) ?? 0;
+    const ww = selectWindowValue(info.windowWidthValues ?? null, frameNumber, info.numberOfFrames) ?? 0;
+    const windowProvided = Number.isFinite(wc) && Number.isFinite(ww) && ww > 0;
 
     return {
         pixelData,
@@ -130,6 +127,7 @@ export async function decodePixelData(
         rescaleIntercept: info.rescaleIntercept,
         windowCenter: wc,
         windowWidth: ww,
+        windowProvided,
         photometricInterpretation: info.photometricInterpretation,
         samplesPerPixel: info.samplesPerPixel,
     };
@@ -162,6 +160,8 @@ function parseForPixelData(buffer: ArrayBuffer, view: DataView): ParsedPixelInfo
         photometricInterpretation: 'MONOCHROME2',
         windowCenter: 0,
         windowWidth: 0,
+        windowCenterValues: null,
+        windowWidthValues: null,
         rescaleSlope: 1,
         rescaleIntercept: 0,
         numberOfFrames: 1,
@@ -263,16 +263,18 @@ function parseForPixelData(buffer: ArrayBuffer, view: DataView): ParsedPixelInfo
                 info.photometricInterpretation = value as string;
                 break;
             case TAGS.WindowCenter:
-                info.windowCenter = parseFloat(String(value)) || 0;
+                info.windowCenterValues = parseWindowMultiValue(value);
+                info.windowCenter = info.windowCenterValues?.[0] ?? 0;
                 break;
             case TAGS.WindowWidth:
-                info.windowWidth = parseFloat(String(value)) || 0;
+                info.windowWidthValues = parseWindowMultiValue(value);
+                info.windowWidth = info.windowWidthValues?.[0] ?? 0;
                 break;
             case TAGS.RescaleSlope:
-                info.rescaleSlope = parseFloat(String(value)) || 1;
+                info.rescaleSlope = parseWindowValue(value) ?? 1;
                 break;
             case TAGS.RescaleIntercept:
-                info.rescaleIntercept = parseFloat(String(value)) || 0;
+                info.rescaleIntercept = parseWindowValue(value) ?? 0;
                 break;
             case TAGS.NumberOfFrames:
                 info.numberOfFrames = parseInt(String(value), 10) || 1;
@@ -423,4 +425,3 @@ export class UnsupportedTransferSyntaxError extends Error {
         this.transferSyntax = transferSyntax;
     }
 }
-

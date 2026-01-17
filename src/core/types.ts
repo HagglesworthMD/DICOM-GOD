@@ -176,6 +176,8 @@ export interface DecodedFrame {
     windowCenter: number;
     /** Default window width */
     windowWidth: number;
+    /** True if DICOM provided a window center/width */
+    windowProvided: boolean;
     /** Photometric interpretation */
     photometricInterpretation: string;
     /** Samples per pixel (1=grayscale, 3=RGB) */

@@ -39,6 +39,9 @@ export function renderFrame(
         const imageData = ctx.createImageData(frame.width, frame.height);
 
         // Apply windowing
+        const photometric = frame.photometricInterpretation?.toUpperCase() ?? 'MONOCHROME2';
+        const mono1 = photometric === 'MONOCHROME1';
+        const effectiveInvert = state.invert !== mono1;
         applyWindowToRGBA(
             frame.pixelData,
             imageData.data,
@@ -48,8 +51,10 @@ export function renderFrame(
             state.windowWidth,
             frame.rescaleSlope,
             frame.rescaleIntercept,
-            state.invert,
-            frame.samplesPerPixel
+            effectiveInvert,
+            frame.samplesPerPixel,
+            frame.bitsStored,
+            frame.isSigned
         );
 
         // Calculate display transform
@@ -182,6 +187,7 @@ export function drawOverlay(
         totalFrames: number;
         windowCenter: number;
         windowWidth: number;
+        windowSource?: 'dicom' | 'assumed';
         zoom: number;
         dimensions?: { width: number; height: number };
         pixelSpacing?: number[]; // [rowSpacing, colSpacing] in mm
@@ -258,15 +264,18 @@ export function drawOverlay(
 
     const wcText = `WC: ${Math.round(info.windowCenter)}`;
     const wwText = `WW: ${Math.round(info.windowWidth)}`;
+    const assumedText = info.windowSource === 'assumed' ? 'assumed VOI' : null;
 
     // Calculate width needed
     const maxWidth = Math.max(
         ctx.measureText(wcText).width,
         ctx.measureText(wwText).width,
-        presetText ? ctx.measureText(presetText).width : 0
+        presetText ? ctx.measureText(presetText).width : 0,
+        assumedText ? ctx.measureText(assumedText).width : 0
     );
     const windowWidth = maxWidth + padding * 2;
-    const windowHeight = presetText ? 60 : 40;
+    const extraLines = (presetText ? 1 : 0) + (assumedText ? 1 : 0);
+    const windowHeight = 40 + extraLines * 20;
 
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
     ctx.fillRect(canvas.width - windowWidth - padding, padding, windowWidth, windowHeight);
@@ -283,6 +292,10 @@ export function drawOverlay(
 
     ctx.fillText(wcText, canvas.width - windowWidth, y);
     ctx.fillText(wwText, canvas.width - windowWidth, y + 14);
+    if (assumedText) {
+        ctx.fillStyle = '#ff4';
+        ctx.fillText(assumedText, canvas.width - windowWidth, y + 28);
+    }
 
     // Bottom-left: Zoom + Spacing source
     let bottomLeftText = `Zoom: ${Math.round(info.zoom * 100)}%`;

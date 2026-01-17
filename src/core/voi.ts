@@ -3,6 +3,8 @@
  * Maps pixel values to display values using window center/width
  */
 
+import { applyWindow, toModalityValue } from './voiLut';
+
 /**
  * Apply linear VOI LUT to a single value
  * Returns 0-255 for display
@@ -13,24 +15,7 @@ export function applyVOI(
     windowWidth: number,
     invert = false
 ): number {
-    const halfWidth = windowWidth / 2;
-    const minVal = windowCenter - halfWidth;
-    const maxVal = windowCenter + halfWidth;
-
-    let output: number;
-    if (value <= minVal) {
-        output = 0;
-    } else if (value >= maxVal) {
-        output = 255;
-    } else {
-        output = ((value - minVal) / windowWidth) * 255;
-    }
-
-    if (invert) {
-        output = 255 - output;
-    }
-
-    return Math.round(output);
+    return applyWindow(value, windowCenter, windowWidth, invert);
 }
 
 /**
@@ -44,15 +29,22 @@ export function createWindowLUT(
     windowWidth: number,
     rescaleSlope: number,
     rescaleIntercept: number,
-    invert = false
+    invert = false,
+    bitsStored = 16,
+    pixelRepresentation = 0
 ): Uint8Array {
     const range = maxPixel - minPixel + 1;
     const lut = new Uint8Array(range);
 
     for (let i = 0; i < range; i++) {
         const storedValue = minPixel + i;
-        const rescaled = storedValue * rescaleSlope + rescaleIntercept;
-        lut[i] = applyVOI(rescaled, windowCenter, windowWidth, invert);
+        const rescaled = toModalityValue(storedValue, {
+            slope: rescaleSlope,
+            intercept: rescaleIntercept,
+            bitsStored,
+            pixelRepresentation,
+        });
+        lut[i] = applyWindow(rescaled, windowCenter, windowWidth, invert);
     }
 
     return lut;
@@ -71,7 +63,9 @@ export function applyWindowToRGBA(
     rescaleSlope: number,
     rescaleIntercept: number,
     invert: boolean,
-    samplesPerPixel: number
+    samplesPerPixel: number,
+    bitsStored: number,
+    isSigned: boolean
 ): void {
     const numPixels = width * height;
 
@@ -100,28 +94,17 @@ export function applyWindowToRGBA(
     }
 
     // Grayscale - apply windowing
-    const halfWidth = windowWidth / 2;
-    const minVal = windowCenter - halfWidth;
-    const scale = 255 / windowWidth;
+    const pixelRepresentation = isSigned ? 1 : 0;
 
     for (let i = 0; i < numPixels; i++) {
         const stored = pixelData[i] ?? 0;
-        const rescaled = stored * rescaleSlope + rescaleIntercept;
-
-        let display: number;
-        if (rescaled <= minVal) {
-            display = 0;
-        } else if (rescaled >= minVal + windowWidth) {
-            display = 255;
-        } else {
-            display = (rescaled - minVal) * scale;
-        }
-
-        if (invert) {
-            display = 255 - display;
-        }
-
-        const clamped = Math.max(0, Math.min(255, Math.round(display)));
+        const rescaled = toModalityValue(stored, {
+            slope: rescaleSlope,
+            intercept: rescaleIntercept,
+            bitsStored,
+            pixelRepresentation,
+        });
+        const clamped = applyWindow(rescaled, windowCenter, windowWidth, invert);
         const dstIdx = i * 4;
         output[dstIdx] = clamped;
         output[dstIdx + 1] = clamped;

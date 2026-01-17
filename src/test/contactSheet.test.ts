@@ -68,8 +68,14 @@ function createTestFrame(
         samplesPerPixel: 1,
         windowCenter: 128,
         windowWidth: 256,
+        windowProvided: true,
         rescaleSlope: 1,
         rescaleIntercept: 0,
+        bitsStored: 8,
+        isSigned: false,
+        minValue: 0,
+        maxValue: 255,
+        photometricInterpretation: 'MONOCHROME2',
     };
 }
 

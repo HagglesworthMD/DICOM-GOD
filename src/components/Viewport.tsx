@@ -24,6 +24,8 @@ import { PRESET_LIST, formatWl, getPresetById } from '../core/wlPresets';
 import { calculateScrubFrameIndex } from '../core/stackScrub';
 import { resolveFrameAuthority } from '../core/frameAuthority';
 import { detectContactSheetHeuristic } from '../core/contactSheet';
+import { computePercentileWindow, toModalityValue } from '../core/voiLut';
+import { getSeriesWindowDefault, setSeriesWindowDefault } from '../core/seriesWindowCache';
 import type { ContactSheet } from '../core/types';
 
 /** Imperative handle exposed by DicomViewer for external action routing */
@@ -49,6 +51,76 @@ const DEFAULT_STATE: ViewportState = {
     tileMode: false,
     tileIndex: 0,
 };
+
+const WINDOW_SAMPLE_FRAMES = 5;
+const WINDOW_SAMPLE_PIXELS = 20000;
+const WINDOW_PERCENTILE_LOW = 1;
+const WINDOW_PERCENTILE_HIGH = 99;
+
+function buildSampleIndices(total: number, target: number): number[] {
+    if (total <= 0) return [];
+    if (total <= target) {
+        return Array.from({ length: total }, (_, i) => i);
+    }
+
+    const indices = new Set<number>();
+    const step = (total - 1) / (target - 1);
+    for (let i = 0; i < target; i++) {
+        indices.add(Math.round(i * step));
+    }
+
+    return Array.from(indices).sort((a, b) => a - b);
+}
+
+function collectModalitySamples(frame: DecodedFrame, maxSamples: number): number[] {
+    if (frame.samplesPerPixel !== 1) return [];
+    const total = frame.pixelData.length;
+    if (total === 0) return [];
+
+    const stride = Math.max(1, Math.floor(total / maxSamples));
+    const samples: number[] = [];
+    const pixelRepresentation = frame.isSigned ? 1 : 0;
+
+    for (let i = 0; i < total; i += stride) {
+        const stored = frame.pixelData[i] ?? 0;
+        samples.push(toModalityValue(stored, {
+            slope: frame.rescaleSlope,
+            intercept: frame.rescaleIntercept,
+            bitsStored: frame.bitsStored,
+            pixelRepresentation,
+        }));
+    }
+
+    return samples;
+}
+
+function computeFallbackWindow(frame: DecodedFrame): { center: number; width: number } {
+    const samples = collectModalitySamples(frame, WINDOW_SAMPLE_PIXELS);
+    if (samples.length > 0) {
+        const result = computePercentileWindow(
+            samples,
+            WINDOW_PERCENTILE_LOW,
+            WINDOW_PERCENTILE_HIGH
+        );
+        return { center: result.center, width: result.width };
+    }
+
+    const pixelRepresentation = frame.isSigned ? 1 : 0;
+    const min = toModalityValue(frame.minValue, {
+        slope: frame.rescaleSlope,
+        intercept: frame.rescaleIntercept,
+        bitsStored: frame.bitsStored,
+        pixelRepresentation,
+    });
+    const max = toModalityValue(frame.maxValue, {
+        slope: frame.rescaleSlope,
+        intercept: frame.rescaleIntercept,
+        bitsStored: frame.bitsStored,
+        pixelRepresentation,
+    });
+    const width = Math.max(1, max - min);
+    return { center: min + width / 2, width };
+}
 
 // ============================================================================
 // LRU Frame Cache
@@ -131,6 +203,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         const [loading, setLoading] = useState(true);
         const [error, setError] = useState<string | null>(null);
         const [isUnsupported, setIsUnsupported] = useState(false);
+        const [windowingSource, setWindowingSource] = useState<'dicom' | 'assumed'>('dicom');
         const [missingPermission, setMissingPermission] = useState(false);
         const [waitingForFiles, setWaitingForFiles] = useState(false);
         const [detectedContactSheet, setDetectedContactSheet] = useState<ContactSheet | null>(null);
@@ -140,6 +213,8 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         const wheelAccumulator = useRef(0);
         const activeRequestId = useRef(0);
         const contactSheetDetectedRef = useRef(false);
+        const windowingLockedRef = useRef(false);
+        const assumedWindowTokenRef = useRef<number | null>(null);
 
         // Series Lifecycle Token (Hard Reset)
         // Incremented on every series switch to fence off old async tasks
@@ -193,7 +268,10 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             setLoading(true);
             setError(null);
             setDetectedContactSheet(null);
+            setWindowingSource('dicom');
             contactSheetDetectedRef.current = false;
+            windowingLockedRef.current = false;
+            assumedWindowTokenRef.current = null;
 
             // 4. Force stop any lingering cine interval (double safety)
             if (cineIntervalRef.current) {
@@ -236,6 +314,81 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
         // Effective contact sheet: prefer series-level (from usRegions) over local heuristic
         const effectiveContactSheet = series.contactSheet ?? detectedContactSheet;
+
+        const resolveWindowDefaults = useCallback((frame: DecodedFrame | null) => {
+            if (!frame) {
+                return { center: 40, width: 400, source: 'assumed' as const };
+            }
+            if (frame.windowProvided && frame.windowWidth > 0) {
+                return { center: frame.windowCenter, width: frame.windowWidth, source: 'dicom' as const };
+            }
+            const cached = getSeriesWindowDefault(series.seriesInstanceUid);
+            if (cached) {
+                return { center: cached.center, width: cached.width, source: 'assumed' as const };
+            }
+            const fallback = computeFallbackWindow(frame);
+            return { center: fallback.center, width: fallback.width, source: 'assumed' as const };
+        }, [series.seriesInstanceUid]);
+
+        const computeSeriesWindowDefaults = useCallback(async () => {
+            if (assumedWindowTokenRef.current === activeSeriesTokenRef.current) return;
+            if (getSeriesWindowDefault(series.seriesInstanceUid)) return;
+            if (instances.length === 0) return;
+
+            const token = activeSeriesTokenRef.current;
+            assumedWindowTokenRef.current = token;
+            try {
+                const samples: number[] = [];
+                const targets = isMultiframe
+                    ? buildSampleIndices(totalFrames, WINDOW_SAMPLE_FRAMES).map(frameNumber => ({
+                        instance: instances[0],
+                        frameNumber,
+                    }))
+                    : buildSampleIndices(instances.length, WINDOW_SAMPLE_FRAMES).map(idx => ({
+                        instance: instances[idx],
+                        frameNumber: 0,
+                    }));
+
+                for (const target of targets) {
+                    try {
+                        const frame = await decodeFrame(target.instance, target.frameNumber);
+                        if (activeSeriesTokenRef.current !== token) return;
+                        samples.push(...collectModalitySamples(frame, WINDOW_SAMPLE_PIXELS));
+                    } catch {
+                        // Ignore sample errors; we'll compute from remaining frames
+                    }
+                }
+
+                if (activeSeriesTokenRef.current !== token) return;
+                if (samples.length === 0) return;
+
+                const result = computePercentileWindow(
+                    samples,
+                    WINDOW_PERCENTILE_LOW,
+                    WINDOW_PERCENTILE_HIGH
+                );
+                setSeriesWindowDefault(series.seriesInstanceUid, {
+                    center: result.center,
+                    width: result.width,
+                    low: result.low,
+                    high: result.high,
+                    method: 'percentile',
+                });
+
+                if (!windowingLockedRef.current && activeSeriesTokenRef.current === token) {
+                    setViewState(prev => ({
+                        ...prev,
+                        windowCenter: result.center,
+                        windowWidth: result.width,
+                    }));
+                }
+                setWindowingSource('assumed');
+            } finally {
+                if (assumedWindowTokenRef.current === token) {
+                    assumedWindowTokenRef.current = null;
+                }
+            }
+        }, [instances, isMultiframe, totalFrames, series.seriesInstanceUid]);
 
 
 
@@ -329,11 +482,13 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 if (DEBUG_PREFETCH) console.log('[PREFETCH] Cache HIT:', cacheKey);
                 setCurrentFrame(cachedFrame);
                 if (viewState.frameIndex === 0 || !currentFrame) {
+                    const defaults = resolveWindowDefaults(cachedFrame);
                     setViewState(prev => ({
                         ...prev,
-                        windowCenter: cachedFrame.windowCenter,
-                        windowWidth: cachedFrame.windowWidth,
+                        windowCenter: defaults.center,
+                        windowWidth: defaults.width,
                     }));
+                    setWindowingSource(defaults.source);
                 }
                 setLoading(false);
                 setError(null);
@@ -366,11 +521,13 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     setCurrentFrame(frame);
                     // Set initial window from frame defaults
                     if (viewState.frameIndex === 0 || !currentFrame) {
+                        const defaults = resolveWindowDefaults(frame);
                         setViewState(prev => ({
                             ...prev,
-                            windowCenter: frame.windowCenter,
-                            windowWidth: frame.windowWidth,
+                            windowCenter: defaults.center,
+                            windowWidth: defaults.width,
                         }));
+                        setWindowingSource(defaults.source);
                     }
                     setLoading(false);
                 })
@@ -406,6 +563,14 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 dispatch({ type: 'SET_STATUS', message: `Contact sheet detected: ${detected.grid.cols}×${detected.grid.rows} grid` });
             }
         }, [currentFrame, series.modality, dispatch]);
+
+        // Assumed VOI calculation for series (percentile-based)
+        useEffect(() => {
+            if (!currentFrame) return;
+            if (currentFrame.windowProvided && currentFrame.windowWidth > 0) return;
+            if (currentFrame.samplesPerPixel !== 1) return;
+            computeSeriesWindowDefaults();
+        }, [currentFrame, computeSeriesWindowDefaults]);
 
         // Prefetch pump - runs after frame changes
         const runPrefetchPump = useCallback(() => {
@@ -599,6 +764,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 totalFrames: totalFrames,
                 windowCenter: viewState.windowCenter,
                 windowWidth: viewState.windowWidth,
+                windowSource: windowingSource,
                 zoom: viewState.zoom,
                 dimensions: { width: frameToRender.width, height: frameToRender.height },
                 pixelSpacing,
@@ -621,7 +787,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     kind: effectiveContactSheet.kind,
                 } : undefined,
             });
-        }, [currentFrame, viewState, loading, error, isUnsupported, totalFrames, currentInstance, series.geometryTrustInfo, effectiveContactSheet, canCine, cineReason]);
+        }, [currentFrame, viewState, loading, error, isUnsupported, totalFrames, currentInstance, series.geometryTrustInfo, effectiveContactSheet, canCine, cineReason, windowingSource]);
 
         // Resize handler
         useEffect(() => {
@@ -848,13 +1014,18 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     setViewState(prev => ({ ...prev, frameIndex: totalFrames - 1 }));
                     break;
                 case 'RESET':
-                    setViewState(prev => ({
-                        ...prev,
-                        zoom: 1, panX: 0, panY: 0,
-                        windowCenter: currentFrame?.windowCenter ?? 40,
-                        windowWidth: currentFrame?.windowWidth ?? 400,
-                        invert: false
-                    }));
+                    windowingLockedRef.current = true;
+                    {
+                        const defaults = resolveWindowDefaults(currentFrame);
+                        setViewState(prev => ({
+                            ...prev,
+                            zoom: 1, panX: 0, panY: 0,
+                            windowCenter: defaults.center,
+                            windowWidth: defaults.width,
+                            invert: false
+                        }));
+                        setWindowingSource(defaults.source);
+                    }
                     break;
                 case 'INVERT':
                     setViewState(prev => ({ ...prev, invert: !prev.invert }));
@@ -879,6 +1050,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     const index = parseInt(action.split('_')[2], 10) - 1;
                     const preset = PRESET_LIST[index];
                     if (preset) {
+                        windowingLockedRef.current = true;
                         setViewState(prev => ({
                             ...prev,
                             windowCenter: preset.wc,
@@ -891,15 +1063,20 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 }
                 case 'WL_DICOM_DEFAULT': {
                     // Reset to DICOM-provided values
-                    const dicomWc = currentFrame?.windowCenter ?? 40;
-                    const dicomWw = currentFrame?.windowWidth ?? 400;
+                    windowingLockedRef.current = true;
+                    const dicomProvided = !!(currentFrame?.windowProvided && currentFrame.windowWidth > 0);
+                    const defaults = resolveWindowDefaults(currentFrame);
+                    const wc = dicomProvided ? currentFrame!.windowCenter : defaults.center;
+                    const ww = dicomProvided ? currentFrame!.windowWidth : defaults.width;
                     setViewState(prev => ({
                         ...prev,
-                        windowCenter: dicomWc,
-                        windowWidth: dicomWw,
-                        activePreset: 'dicom_default',
+                        windowCenter: wc,
+                        windowWidth: ww,
+                        activePreset: dicomProvided ? 'dicom_default' : undefined,
                     }));
-                    dispatch({ type: 'SET_STATUS', message: `WL: DICOM Default (${formatWl(dicomWc, dicomWw)})` });
+                    setWindowingSource(dicomProvided ? 'dicom' : defaults.source);
+                    const label = dicomProvided ? 'DICOM Default' : 'Assumed VOI';
+                    dispatch({ type: 'SET_STATUS', message: `WL: ${label} (${formatWl(wc, ww)})` });
                     break;
                 }
                 case 'CLOSE_DIALOG':
@@ -1074,6 +1251,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     panY: prev.panY + dy,
                 }));
             } else if (dragRef.current.mode === 'wl') {
+                windowingLockedRef.current = true;
                 setViewState(prev => ({
                     ...prev,
                     windowCenter: prev.windowCenter + dy,
@@ -1244,7 +1422,15 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                         <button onClick={() => setViewState(prev => ({ ...prev, invert: !prev.invert }))} title="Invert (I)">
                             ◐
                         </button>
-                        <button onClick={() => setViewState({ ...DEFAULT_STATE, windowCenter: currentFrame?.windowCenter ?? 40, windowWidth: currentFrame?.windowWidth ?? 400 })} title="Reset (R)">
+                        <button
+                            onClick={() => {
+                                windowingLockedRef.current = true;
+                                const defaults = resolveWindowDefaults(currentFrame);
+                                setViewState({ ...DEFAULT_STATE, windowCenter: defaults.center, windowWidth: defaults.width });
+                                setWindowingSource(defaults.source);
+                            }}
+                            title="Reset (R)"
+                        >
                             ↺
                         </button>
                         {viewState.measurements.length > 0 && (
@@ -1300,6 +1486,14 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 <div className="dicom-viewer__status">
                     <span>Frame: {viewState.frameIndex + 1}/{totalFrames}</span>
                     <span>WC/WW: {Math.round(viewState.windowCenter)}/{Math.round(viewState.windowWidth)}</span>
+                    {windowingSource === 'assumed' && (
+                        <span
+                            className="dicom-viewer__assumed-voi"
+                            title="VOI computed from sampled frames"
+                        >
+                            assumed VOI
+                        </span>
+                    )}
                     <span>Zoom: {Math.round(viewState.zoom * 100)}%</span>
                     {viewState.isPlaying && <span className="dicom-viewer__cine">▶ CINE</span>}
                     {isBuffering && <span className="dicom-viewer__buffering" title="Displaying previous frame while decoding">⏳</span>}

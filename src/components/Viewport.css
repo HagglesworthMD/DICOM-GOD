@@ -301,6 +301,11 @@
     color: var(--color-text-muted);
 }
 
+.dicom-viewer__assumed-voi {
+    color: var(--color-warning);
+    font-weight: 600;
+}
+
 .dicom-viewer__cine {
     color: var(--color-success);
     font-weight: 600;

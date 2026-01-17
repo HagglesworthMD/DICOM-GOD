@@ -19,6 +19,7 @@ function createMockFrame(size = 1024): DecodedFrame {
         rescaleIntercept: 0,
         windowCenter: 2048,
         windowWidth: 4096,
+        windowProvided: true,
         photometricInterpretation: 'MONOCHROME2',
         samplesPerPixel: 1,
     };
