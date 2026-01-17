@@ -59,7 +59,7 @@ export interface Study {
 }
 
 /** Series classification for UI and behavior gating */
-export type SeriesKind = 'stack' | 'single' | 'multiframe' | 'unsafe';
+export type SeriesKind = 'stack' | 'single' | 'multiframe' | 'unsafe' | 'document';
 
 /** Contact sheet tile rectangle */
 export interface ContactSheetTile {
@@ -102,6 +102,8 @@ export interface Series {
     cineEligible: boolean;
     /** Reason cine is disabled (if !cineEligible) */
     cineReason?: string;
+    /** True when series should be treated as stack for viewing */
+    stackLike?: boolean;
     /** True if any instance has NumberOfFrames > 1 */
     hasMultiframe?: boolean;
     /** Contact sheet detection for US montage images */
@@ -120,6 +122,8 @@ export interface Instance {
     /** Original file path (for display only, not for lookup) */
     filePath: string;
     fileSize: number;
+    /** SOP Class UID (optional, for semantic classification) */
+    sopClassUid?: string;
 
     // Geometry
     imageOrientationPatient?: string;
@@ -229,10 +233,6 @@ export interface ViewportState {
     measurements: LengthMeasurement[];
     /** Active WL preset ID (optional for display) */
     activePreset?: string;
-    /** Tile mode for contact sheet viewing */
-    tileMode: boolean;
-    /** Current tile index within contact sheet */
-    tileIndex: number;
 }
 
 /** Available viewport tools */
@@ -261,8 +261,6 @@ export const DEFAULT_VIEWPORT_STATE: ViewportState = {
     cineFrameRate: 15,
     activeTool: 'hand',
     measurements: [],
-    tileMode: false,
-    tileIndex: 0,
 };
 
 // ============================================================================
@@ -278,19 +276,41 @@ export interface DecodeRequest {
     frameNumber: number;
 }
 
+/** Request to decode a mosaic tile (UI-only, not a dataset frame) */
+export interface DecodeMosaicTileRequest {
+    type: 'DECODE_MOSAIC_TILE';
+    requestId: string;
+    file: File;
+    instanceUid: string;
+    frameNumber: number;
+    tileIndex: number;
+    rows: number;
+    cols: number;
+    tileCount: number;
+}
+
 /** Cancel decode request */
 export interface CancelDecodeRequest {
     type: 'CANCEL';
     requestId: string;
 }
 
-export type DecodeWorkerRequest = DecodeRequest | CancelDecodeRequest;
+export type DecodeWorkerRequest = DecodeRequest | DecodeMosaicTileRequest | CancelDecodeRequest;
 
 export interface DecodeSuccess {
     type: 'DECODED';
     requestId: string;
     instanceUid: string;
     frameNumber: number;
+    frame: DecodedFrame;
+}
+
+export interface DecodeMosaicTileSuccess {
+    type: 'DECODED_MOSAIC_TILE';
+    requestId: string;
+    instanceUid: string;
+    frameNumber: number;
+    tileIndex: number;
     frame: DecodedFrame;
 }
 
@@ -307,7 +327,7 @@ export interface DecodeCancelled {
     requestId: string;
 }
 
-export type DecodeWorkerResponse = DecodeSuccess | DecodeError | DecodeCancelled;
+export type DecodeWorkerResponse = DecodeSuccess | DecodeMosaicTileSuccess | DecodeError | DecodeCancelled;
 
 // ============================================================================
 // Indexing Progress

@@ -6,6 +6,7 @@
 import { createLogger } from './logger';
 import { getFrameCache } from './frameCache';
 import type {
+    DecodeMosaicTileRequest,
     DecodeWorkerRequest,
     DecodeWorkerResponse,
     DecodedFrame,
@@ -59,6 +60,9 @@ function handleWorkerMessage(event: MessageEvent<DecodeWorkerResponse>) {
         case 'DECODED':
             // Cache the result
             getFrameCache().set(msg.instanceUid, msg.frameNumber, msg.frame);
+            pending.resolve(msg.frame);
+            break;
+        case 'DECODED_MOSAIC_TILE':
             pending.resolve(msg.frame);
             break;
 
@@ -165,14 +169,59 @@ export function decodeFrame(
 }
 
 /**
+ * Decode a mosaic tile (UI-only, does not affect dataset frame semantics)
+ */
+export function decodeMosaicTile(
+    instance: Instance,
+    tileIndex: number,
+    rows: number,
+    cols: number,
+    tileCount: number,
+    frameNumber = 0
+): { requestId: string; promise: Promise<DecodedFrame> } {
+    const file = fileMap.get(instance.sopInstanceUid);
+    const requestId = `mosaic-${++requestCounter}-${Date.now()}`;
+
+    if (!file) {
+        return {
+            requestId,
+            promise: Promise.reject(new Error('File not found for instance')),
+        };
+    }
+
+    const promise = new Promise<DecodedFrame>((resolve, reject) => {
+        pendingRequests.set(requestId, { resolve, reject });
+
+        const w = getWorker();
+        const msg: DecodeMosaicTileRequest = {
+            type: 'DECODE_MOSAIC_TILE',
+            requestId,
+            file,
+            instanceUid: instance.sopInstanceUid,
+            frameNumber,
+            tileIndex,
+            rows,
+            cols,
+            tileCount,
+        };
+
+        w.postMessage(msg);
+    });
+
+    return { requestId, promise };
+}
+
+/**
  * Cancel a pending decode request
  */
 export function cancelRequest(requestId: string): void {
-    if (!pendingRequests.has(requestId)) return;
+    const pending = pendingRequests.get(requestId);
+    if (!pending) return;
 
     const w = getWorker();
     w.postMessage({ type: 'CANCEL', requestId });
 
+    pending.reject(new Error('Decode cancelled'));
     pendingRequests.delete(requestId);
 }
 
@@ -209,4 +258,3 @@ export class DecodeError extends Error {
         this.isUnsupported = isUnsupported;
     }
 }
-

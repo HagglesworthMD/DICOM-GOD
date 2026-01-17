@@ -7,8 +7,10 @@ import { getFlag } from '../core/featureFlags';
 import { useAppState, useAppDispatch } from '../state/store';
 import {
     decodeFrame,
+    decodeMosaicTile,
     registerInstanceFiles,
     clearInstanceFilesForSeries,
+    cancelRequest,
     DecodeError
 } from '../core/decodeBridge';
 import { renderFrame, renderLoading, renderError, drawOverlay } from '../core/canvas2dRenderer';
@@ -129,6 +131,12 @@ const PREFETCH_CINE_BEHIND = 2;   // Frames to prefetch behind during cine
 const PREFETCH_MANUAL_AHEAD = 4;  // Frames to prefetch ahead during manual nav
 const PREFETCH_MANUAL_BEHIND = 2; // Frames to prefetch behind during manual nav
 const PREFETCH_MAX_INFLIGHT = 1;
+const MOSAIC_TILE_CACHE_SIZE = 48;
+const MOSAIC_PREFETCH_CINE_AHEAD = 6;
+const MOSAIC_PREFETCH_CINE_BEHIND = 2;
+const MOSAIC_PREFETCH_MANUAL_AHEAD = 3;
+const MOSAIC_PREFETCH_MANUAL_BEHIND = 1;
+const MOSAIC_PREFETCH_MAX_INFLIGHT = 1;
 const DEBUG_PREFETCH = false;
 
 /** Simple LRU cache for decoded frames */
@@ -197,6 +205,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
         const [viewState, setViewState] = useState<ViewportState>(DEFAULT_STATE);
         const [currentFrame, setCurrentFrame] = useState<DecodedFrame | null>(null);
+        const [currentTileFrame, setCurrentTileFrame] = useState<{ frame: DecodedFrame; tileIndex: number } | null>(null);
         const [contactSheet, setContactSheet] = useState<ContactSheet | null>(null);
         const [tileSteppingEnabled, setTileSteppingEnabled] = useState(false);
         const [tileIndex, setTileIndex] = useState(0);
@@ -224,12 +233,20 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
         // LRU cache for decoded frames (per-component instance = per-series due to key remount)
         const frameCacheRef = useRef(new FrameLRUCache(CACHE_MAX_SIZE));
+        const tileCacheRef = useRef(new FrameLRUCache(MOSAIC_TILE_CACHE_SIZE));
 
         // Prefetch state
         const prefetchQueueRef = useRef<Instance[]>([]);
         const prefetchQueuedSetRef = useRef(new Set<string>()); // Dedupe
         const prefetchInflightRef = useRef(0);
         const prefetchGenerationRef = useRef(0); // Invalidation token
+        const tilePrefetchQueueRef = useRef<number[]>([]);
+        const tilePrefetchQueuedSetRef = useRef(new Set<number>());
+        const tilePrefetchInflightRef = useRef(0);
+        const tilePrefetchGenerationRef = useRef(0);
+        const tilePrefetchRequestIdRef = useRef<string | null>(null);
+        const tileDecodeRequestIdRef = useRef<string | null>(null);
+        const tileDecodeInFlightRef = useRef(false);
 
         // Navigation direction tracking (+1 forward, -1 backward)
         const lastNavDirRef = useRef<1 | -1>(1);
@@ -256,6 +273,20 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             hasRenderedFrameRef.current = false;
             prefetchQueueRef.current = [];
             prefetchQueuedSetRef.current.clear();
+            tilePrefetchQueueRef.current = [];
+            tilePrefetchQueuedSetRef.current.clear();
+            tilePrefetchInflightRef.current = 0;
+            tilePrefetchGenerationRef.current++;
+            if (tilePrefetchRequestIdRef.current) {
+                cancelRequest(tilePrefetchRequestIdRef.current);
+                tilePrefetchRequestIdRef.current = null;
+            }
+            if (tileDecodeRequestIdRef.current) {
+                cancelRequest(tileDecodeRequestIdRef.current);
+                tileDecodeRequestIdRef.current = null;
+            }
+            tileDecodeInFlightRef.current = false;
+            tileCacheRef.current.clear();
 
             // 3. Reset State (Stop cine, Frame 0)
             setViewState({
@@ -265,6 +296,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 frameIndex: 0
             });
             setCurrentFrame(null);
+            setCurrentTileFrame(null);
             setContactSheet(null);
             setTileSteppingEnabled(false);
             setTileIndex(0);
@@ -316,6 +348,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         const tileCount = mosaicGrid?.tileCount ?? 0;
         const mosaicActive = !!mosaicGrid && baseTotalFrames === 1;
         const tileSteppingOn = mosaicActive && tileSteppingEnabled;
+        const tileIndexForRender = tileSteppingOn ? tileIndex : 0;
         const totalFrames = baseTotalFrames;
         const effectiveStackLike = mosaicActive ? tileSteppingOn : stackLike;
 
@@ -343,7 +376,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             ? 'Measurements disabled: spacing untrusted for mosaic tiles'
             : null;
 
-        const resolveRenderSource = useCallback((frame: DecodedFrame | null) => {
+        const resolveRenderSource = useCallback((frame: DecodedFrame | null, applyMosaicCrop: boolean) => {
             if (!frame) return null;
             if (!mosaicActive || !mosaicGrid) {
                 return {
@@ -355,34 +388,54 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 };
             }
 
-            const safeIndex = Math.min(tileIndex, mosaicGrid.tileCount - 1);
-            const rect = computeMosaicTileRect(
-                frame.width,
-                frame.height,
-                mosaicGrid.rows,
-                mosaicGrid.cols,
-                safeIndex
-            );
+            const safeIndex = Math.min(tileIndexForRender, mosaicGrid.tileCount - 1);
+            const tileInfo = {
+                tileIndex: safeIndex,
+                tileCount: mosaicGrid.tileCount,
+                grid: { rows: mosaicGrid.rows, cols: mosaicGrid.cols },
+                kind: contactSheet?.kind ?? 'heuristic',
+            };
+
+            if (applyMosaicCrop) {
+                const rect = computeMosaicTileRect(
+                    frame.width,
+                    frame.height,
+                    mosaicGrid.rows,
+                    mosaicGrid.cols,
+                    safeIndex
+                );
+
+                return {
+                    frame,
+                    mosaic: {
+                        rows: mosaicGrid.rows,
+                        cols: mosaicGrid.cols,
+                        tileIndex: safeIndex,
+                        tileCount: mosaicGrid.tileCount,
+                        assumedGrid: mosaicGrid.assumedGrid,
+                    },
+                    width: rect.w,
+                    height: rect.h,
+                    tileInfo,
+                };
+            }
 
             return {
                 frame,
-                mosaic: {
-                    rows: mosaicGrid.rows,
-                    cols: mosaicGrid.cols,
-                    tileIndex: safeIndex,
-                    tileCount: mosaicGrid.tileCount,
-                    assumedGrid: mosaicGrid.assumedGrid,
-                },
-                width: rect.w,
-                height: rect.h,
-                tileInfo: {
-                    tileIndex: safeIndex,
-                    tileCount: mosaicGrid.tileCount,
-                    grid: { rows: mosaicGrid.rows, cols: mosaicGrid.cols },
-                    kind: contactSheet?.kind ?? 'heuristic',
-                },
+                mosaic: null,
+                width: frame.width,
+                height: frame.height,
+                tileInfo,
             };
-        }, [mosaicActive, mosaicGrid, tileIndex, contactSheet]);
+        }, [mosaicActive, mosaicGrid, tileIndexForRender, contactSheet]);
+
+        const buildTileCacheKey = useCallback((
+            instanceUid: string,
+            rows: number,
+            cols: number,
+            tileCountValue: number,
+            index: number
+        ) => `${instanceUid}:${rows}x${cols}:${tileCountValue}:tile:${index}`, []);
 
         useEffect(() => {
             if (!mosaicActive) {
@@ -697,6 +750,145 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             }
         }, []);
 
+        const runTilePrefetchPump = useCallback(() => {
+            if (!mosaicActive || !mosaicGrid || !tileSteppingOn || tileCount <= 1 || !currentInstance) {
+                return;
+            }
+            if (tileDecodeInFlightRef.current) {
+                return;
+            }
+
+            const queue = tilePrefetchQueueRef.current;
+            const cache = tileCacheRef.current;
+            const generation = tilePrefetchGenerationRef.current;
+            const token = activeSeriesTokenRef.current;
+
+            while (tilePrefetchInflightRef.current < MOSAIC_PREFETCH_MAX_INFLIGHT && queue.length > 0) {
+                const nextIndex = queue.shift()!;
+                const cacheKey = buildTileCacheKey(
+                    currentInstance.sopInstanceUid,
+                    mosaicGrid.rows,
+                    mosaicGrid.cols,
+                    mosaicGrid.tileCount,
+                    nextIndex
+                );
+
+                if (cache.has(cacheKey)) continue;
+
+                tilePrefetchInflightRef.current++;
+
+                const { requestId, promise } = decodeMosaicTile(
+                    currentInstance,
+                    nextIndex,
+                    mosaicGrid.rows,
+                    mosaicGrid.cols,
+                    mosaicGrid.tileCount,
+                    intraFrameIndex
+                );
+                tilePrefetchRequestIdRef.current = requestId;
+
+                promise
+                    .then(frame => {
+                        if (tilePrefetchGenerationRef.current !== generation) return;
+                        if (activeSeriesTokenRef.current !== token) return;
+
+                        cache.set(cacheKey, frame);
+                    })
+                    .catch(() => {
+                        // Prefetch failures are non-fatal
+                    })
+                    .finally(() => {
+                        if (tilePrefetchRequestIdRef.current === requestId) {
+                            tilePrefetchRequestIdRef.current = null;
+                        }
+                        tilePrefetchInflightRef.current--;
+                        if (tilePrefetchGenerationRef.current === generation && activeSeriesTokenRef.current === token) {
+                            runTilePrefetchPump();
+                        }
+                    });
+            }
+        }, [mosaicActive, mosaicGrid, tileSteppingOn, tileCount, currentInstance, intraFrameIndex, buildTileCacheKey]);
+
+        // Decode mosaic tiles on demand (UI-only, dataset frames unchanged)
+        useEffect(() => {
+            if (!mosaicActive || !mosaicGrid || !currentInstance) {
+                if (tileDecodeRequestIdRef.current) {
+                    cancelRequest(tileDecodeRequestIdRef.current);
+                    tileDecodeRequestIdRef.current = null;
+                }
+                tileDecodeInFlightRef.current = false;
+                setCurrentTileFrame(null);
+                return;
+            }
+
+            const safeIndex = Math.min(tileIndexForRender, mosaicGrid.tileCount - 1);
+            const cacheKey = buildTileCacheKey(
+                currentInstance.sopInstanceUid,
+                mosaicGrid.rows,
+                mosaicGrid.cols,
+                mosaicGrid.tileCount,
+                safeIndex
+            );
+            const cachedTile = tileCacheRef.current.get(cacheKey);
+            if (cachedTile) {
+                setCurrentTileFrame({ frame: cachedTile, tileIndex: safeIndex });
+                return;
+            }
+
+            setCurrentTileFrame(null);
+            if (tileDecodeRequestIdRef.current) {
+                cancelRequest(tileDecodeRequestIdRef.current);
+                tileDecodeRequestIdRef.current = null;
+            }
+            if (tilePrefetchRequestIdRef.current) {
+                cancelRequest(tilePrefetchRequestIdRef.current);
+                tilePrefetchRequestIdRef.current = null;
+                tilePrefetchInflightRef.current = 0;
+            }
+
+            const token = activeSeriesTokenRef.current;
+            const { requestId, promise } = decodeMosaicTile(
+                currentInstance,
+                safeIndex,
+                mosaicGrid.rows,
+                mosaicGrid.cols,
+                mosaicGrid.tileCount,
+                intraFrameIndex
+            );
+
+            tileDecodeRequestIdRef.current = requestId;
+            tileDecodeInFlightRef.current = true;
+
+            promise
+                .then(frame => {
+                    if (activeSeriesTokenRef.current !== token) return;
+                    if (tileDecodeRequestIdRef.current !== requestId) return;
+
+                    tileCacheRef.current.set(cacheKey, frame);
+                    setCurrentTileFrame({ frame, tileIndex: safeIndex });
+                })
+                .catch(err => {
+                    if (activeSeriesTokenRef.current !== token) return;
+                    if (tileDecodeRequestIdRef.current !== requestId) return;
+
+                    if (import.meta.env.DEV) {
+                        console.warn('[Viewport] mosaic tile decode failed; falling back to full-frame crop', {
+                            error: err instanceof Error ? err.message : err,
+                            instanceUid: currentInstance.sopInstanceUid,
+                            tileIndex: safeIndex,
+                        });
+                    }
+                    setCurrentTileFrame(null);
+                })
+                .finally(() => {
+                    if (tileDecodeRequestIdRef.current === requestId) {
+                        tileDecodeRequestIdRef.current = null;
+                    }
+                    tileDecodeInFlightRef.current = false;
+                    runTilePrefetchPump();
+                });
+        }, [mosaicActive, mosaicGrid, currentInstance, tileIndexForRender, intraFrameIndex, buildTileCacheKey, runTilePrefetchPump]);
+
         // Schedule prefetch after frame index changes (direction-aware)
         useEffect(() => {
             const startIdx = viewState.frameIndex;
@@ -742,6 +934,68 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             prefetchQueueRef.current = queue;
             runPrefetchPump();
         }, [viewState.frameIndex, viewState.isPlaying, instances, runPrefetchPump]);
+
+        useEffect(() => {
+            tilePrefetchGenerationRef.current++;
+            const generation = tilePrefetchGenerationRef.current;
+
+            if (!mosaicActive || !mosaicGrid || !tileSteppingOn || tileCount <= 1 || !currentInstance) {
+                tilePrefetchQueueRef.current = [];
+                tilePrefetchQueuedSetRef.current.clear();
+                if (tilePrefetchRequestIdRef.current) {
+                    cancelRequest(tilePrefetchRequestIdRef.current);
+                    tilePrefetchRequestIdRef.current = null;
+                }
+                return;
+            }
+
+            const dir = lastNavDirRef.current;
+            const queue: number[] = [];
+            const queuedSet = tilePrefetchQueuedSetRef.current;
+            queuedSet.clear();
+
+            const prefetchAhead = viewState.isPlaying ? MOSAIC_PREFETCH_CINE_AHEAD : MOSAIC_PREFETCH_MANUAL_AHEAD;
+            const prefetchBehind = viewState.isPlaying ? MOSAIC_PREFETCH_CINE_BEHIND : MOSAIC_PREFETCH_MANUAL_BEHIND;
+
+            for (let i = 1; i <= prefetchAhead; i++) {
+                const idx = dir > 0
+                    ? (tileIndexForRender + i) % tileCount
+                    : (tileIndexForRender - i + tileCount) % tileCount;
+                const cacheKey = buildTileCacheKey(
+                    currentInstance.sopInstanceUid,
+                    mosaicGrid.rows,
+                    mosaicGrid.cols,
+                    mosaicGrid.tileCount,
+                    idx
+                );
+                if (!queuedSet.has(idx) && !tileCacheRef.current.has(cacheKey)) {
+                    queue.push(idx);
+                    queuedSet.add(idx);
+                }
+            }
+
+            for (let i = 1; i <= prefetchBehind; i++) {
+                const idx = dir > 0
+                    ? (tileIndexForRender - i + tileCount) % tileCount
+                    : (tileIndexForRender + i) % tileCount;
+                const cacheKey = buildTileCacheKey(
+                    currentInstance.sopInstanceUid,
+                    mosaicGrid.rows,
+                    mosaicGrid.cols,
+                    mosaicGrid.tileCount,
+                    idx
+                );
+                if (!queuedSet.has(idx) && !tileCacheRef.current.has(cacheKey)) {
+                    queue.push(idx);
+                    queuedSet.add(idx);
+                }
+            }
+
+            tilePrefetchQueueRef.current = queue;
+            if (tilePrefetchGenerationRef.current === generation) {
+                runTilePrefetchPump();
+            }
+        }, [tileIndexForRender, viewState.isPlaying, mosaicActive, mosaicGrid, tileSteppingOn, tileCount, currentInstance, buildTileCacheKey, runTilePrefetchPump]);
 
         // Render to canvas
         useEffect(() => {
@@ -789,7 +1043,14 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 return;
             }
 
-            const renderSource = resolveRenderSource(frameToRender);
+            const safeTileIndex = mosaicActive ? Math.min(tileIndexForRender, Math.max(1, tileCount) - 1) : 0;
+            const tileFrameCandidate = mosaicActive && currentTileFrame?.tileIndex === safeTileIndex
+                ? currentTileFrame.frame
+                : null;
+            const renderSource = resolveRenderSource(
+                tileFrameCandidate ?? frameToRender,
+                mosaicActive && !tileFrameCandidate
+            );
             if (!renderSource) {
                 return;
             }
@@ -872,7 +1133,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 activePresetName: viewState.activePreset ? getPresetById(viewState.activePreset)?.label : undefined,
                 tileInfo: renderSource.tileInfo,
             });
-        }, [currentFrame, viewState, loading, error, isUnsupported, totalFrames, currentInstance, series.geometryTrustInfo, canCine, cineReason, windowingSource, resolveRenderSource, effectiveStackLike, series.seriesInstanceUid, series.kind, intraFrameIndex]);
+        }, [currentFrame, currentTileFrame, viewState, loading, error, isUnsupported, totalFrames, tileIndexForRender, tileCount, mosaicActive, currentInstance, series.geometryTrustInfo, canCine, cineReason, windowingSource, resolveRenderSource, effectiveStackLike, series.seriesInstanceUid, series.kind, intraFrameIndex]);
 
         // Resize handler
         useEffect(() => {
@@ -1241,7 +1502,14 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             );
             const frameForTools = authority.frame;
             if (!canvas || !container || !frameForTools) return null;
-            const renderSource = resolveRenderSource(frameForTools);
+            const safeTileIndex = mosaicActive ? Math.min(tileIndexForRender, Math.max(1, tileCount) - 1) : 0;
+            const tileFrameCandidate = mosaicActive && currentTileFrame?.tileIndex === safeTileIndex
+                ? currentTileFrame.frame
+                : null;
+            const renderSource = resolveRenderSource(
+                tileFrameCandidate ?? frameForTools,
+                mosaicActive && !tileFrameCandidate
+            );
             if (!renderSource) return null;
 
             const rect = canvas.getBoundingClientRect();
@@ -1274,7 +1542,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             const imgPixelY = ((canvasY - imageY) / displayHeight) * renderSource.height;
 
             return { x: imgPixelX, y: imgPixelY };
-        }, [currentFrame, viewState.zoom, viewState.panX, viewState.panY, resolveRenderSource]);
+        }, [currentFrame, currentTileFrame, viewState.zoom, viewState.panX, viewState.panY, tileIndexForRender, tileCount, mosaicActive, resolveRenderSource]);
 
         const handleMouseDown = useCallback((e: React.MouseEvent) => {
             // Measurement tool (length) takes priority on left click
@@ -1621,7 +1889,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 <div className="dicom-viewer__status">
                     <span>Frame: {viewState.frameIndex + 1}/{totalFrames}</span>
                     {mosaicActive && (
-                        <span title={mosaicTooltip}>MOSAIC / CONTACT SHEET tile {tileIndex + 1}/{tileCount}</span>
+                        <span title={mosaicTooltip}>MOSAIC / CONTACT SHEET tile {tileIndexForRender + 1}/{tileCount}</span>
                     )}
                     {mosaicMeasurementWarning && (
                         <span title={mosaicMeasurementWarning} style={{ color: '#fc4' }}>
