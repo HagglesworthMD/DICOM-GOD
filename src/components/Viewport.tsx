@@ -6,7 +6,7 @@ import { useRef, useEffect, useState, useCallback, forwardRef, useImperativeHand
 import { getFlag } from '../core/featureFlags';
 import { useAppState, useAppDispatch } from '../state/store';
 import {
-    decodeFrame,
+    decodeFrameWithRequest,
     decodeMosaicTile,
     registerInstanceFiles,
     clearInstanceFilesForSeries,
@@ -29,6 +29,7 @@ import { classifySeriesSemantics } from '../core/seriesSemantics';
 import { computePercentileWindow, toModalityValue } from '../core/voiLut';
 import { getSeriesWindowDefault, setSeriesWindowDefault } from '../core/seriesWindowCache';
 import { computeMosaicTileRect, resolveMosaicGrid } from '../core/mosaic';
+import { authorityMatches, authoritySameSeries, shouldAcceptDecode, type AuthorityToken } from '../core/authority';
 
 /** Imperative handle exposed by DicomViewer for external action routing */
 export interface DicomViewerHandle {
@@ -209,6 +210,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         const [contactSheet, setContactSheet] = useState<ContactSheet | null>(null);
         const [tileSteppingEnabled, setTileSteppingEnabled] = useState(false);
         const [tileIndex, setTileIndex] = useState(0);
+        const [displayedFrameIndex, setDisplayedFrameIndex] = useState(0);
         const [isBuffering, setIsBuffering] = useState(false);
         const [loading, setLoading] = useState(true);
         const [error, setError] = useState<string | null>(null);
@@ -220,9 +222,17 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         const dragRef = useRef<{ startX: number; startY: number; mode: 'pan' | 'wl' | 'zoom' | 'measure' | 'scrub' | null }>({ startX: 0, startY: 0, mode: null });
         const scrubRef = useRef<{ startFrame: number; startY: number; wasPlaying: boolean }>({ startFrame: 0, startY: 0, wasPlaying: false });
         const wheelAccumulator = useRef(0);
-        const activeRequestId = useRef(0);
         const windowingLockedRef = useRef(false);
         const assumedWindowTokenRef = useRef<number | null>(null);
+        const authorityGenerationRef = useRef(0);
+        const authorityRef = useRef<AuthorityToken>({
+            seriesUid: series.seriesInstanceUid,
+            frameIndex: 0,
+            generation: 0,
+        });
+        const currentFrameAuthorityRef = useRef<AuthorityToken | null>(null);
+        const lastRenderedRef = useRef<AuthorityToken | null>(null);
+        const mainDecodeRequestIdRef = useRef<string | null>(null);
 
         // Series Lifecycle Token (Hard Reset)
         // Incremented on every series switch to fence off old async tasks
@@ -236,7 +246,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         const tileCacheRef = useRef(new FrameLRUCache(MOSAIC_TILE_CACHE_SIZE));
 
         // Prefetch state
-        const prefetchQueueRef = useRef<Instance[]>([]);
+        const prefetchQueueRef = useRef<{ instance: Instance; frameIndex: number }[]>([]);
         const prefetchQueuedSetRef = useRef(new Set<string>()); // Dedupe
         const prefetchInflightRef = useRef(0);
         const prefetchGenerationRef = useRef(0); // Invalidation token
@@ -260,13 +270,21 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         const hasRenderedFrameRef = useRef(false);
 
         // Flicker-free cine: hold last successfully decoded frame to display while buffering
-        const lastGoodFrameRef = useRef<DecodedFrame | null>(null);
+        const lastGoodFrameRef = useRef<{ frame: DecodedFrame; index: number; authority: AuthorityToken } | null>(null);
 
         // --- Series Switch Hard Reset ---
         useEffect(() => {
             // 1. Increment token to invalidate old async/cine
             activeSeriesTokenRef.current++;
             const token = activeSeriesTokenRef.current;
+            authorityGenerationRef.current += 1;
+            authorityRef.current = {
+                seriesUid: series.seriesInstanceUid,
+                frameIndex: 0,
+                generation: authorityGenerationRef.current,
+            };
+            currentFrameAuthorityRef.current = null;
+            lastRenderedRef.current = null;
 
             // 2. Clear buffers and caches
             lastGoodFrameRef.current = null;
@@ -285,6 +303,10 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 cancelRequest(tileDecodeRequestIdRef.current);
                 tileDecodeRequestIdRef.current = null;
             }
+            if (mainDecodeRequestIdRef.current) {
+                cancelRequest(mainDecodeRequestIdRef.current);
+                mainDecodeRequestIdRef.current = null;
+            }
             tileDecodeInFlightRef.current = false;
             tileCacheRef.current.clear();
 
@@ -300,6 +322,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             setContactSheet(null);
             setTileSteppingEnabled(false);
             setTileIndex(0);
+            setDisplayedFrameIndex(0);
             setLoading(true);
             setError(null);
             setWindowingSource('dicom');
@@ -316,13 +339,54 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
         }, [series.seriesInstanceUid]);
 
+        useEffect(() => {
+            return () => {
+                authorityGenerationRef.current += 1;
+                if (mainDecodeRequestIdRef.current) {
+                    cancelRequest(mainDecodeRequestIdRef.current);
+                    mainDecodeRequestIdRef.current = null;
+                }
+                if (tileDecodeRequestIdRef.current) {
+                    cancelRequest(tileDecodeRequestIdRef.current);
+                    tileDecodeRequestIdRef.current = null;
+                }
+                if (tilePrefetchRequestIdRef.current) {
+                    cancelRequest(tilePrefetchRequestIdRef.current);
+                    tilePrefetchRequestIdRef.current = null;
+                }
+            };
+        }, []);
+
+        const lastRegistryRef = useRef<FileRegistry>(fileRegistry);
+
+        useEffect(() => {
+            if (lastRegistryRef.current === fileRegistry) return;
+            lastRegistryRef.current = fileRegistry;
+
+            authorityGenerationRef.current += 1;
+            authorityRef.current = {
+                seriesUid: series.seriesInstanceUid,
+                frameIndex: viewState.frameIndex,
+                generation: authorityGenerationRef.current,
+            };
+            currentFrameAuthorityRef.current = null;
+            lastGoodFrameRef.current = null;
+            lastRenderedRef.current = null;
+
+            if (mainDecodeRequestIdRef.current) {
+                cancelRequest(mainDecodeRequestIdRef.current);
+                mainDecodeRequestIdRef.current = null;
+            }
+        }, [fileRegistry, series.seriesInstanceUid, viewState.frameIndex]);
+
 
 
 
         const instances = series.instances;
-        const semantics = classifySeriesSemantics(instances);
-        const hasMultiframe = series.hasMultiframe ?? semantics.hasMultiframe;
-        const stackLike = series.stackLike ?? semantics.stackLike;
+        const semantics = classifySeriesSemantics(instances, series.modality);
+        const semanticKind = semantics.semanticKind;
+        const hasMultiframe = semanticKind === 'multiframe';
+        const stackLike = semanticKind === 'stack' || semanticKind === 'multiframe';
         const seriesCanCine = series.cineEligible;
         const seriesCineReason = series.cineReason;
 
@@ -346,11 +410,23 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             contactSheet?.grid.cols
         );
         const tileCount = mosaicGrid?.tileCount ?? 0;
-        const mosaicActive = !!mosaicGrid && baseTotalFrames === 1;
+        const mosaicActive = semanticKind === 'mosaic' && !!mosaicGrid && baseTotalFrames === 1;
         const tileSteppingOn = mosaicActive && tileSteppingEnabled;
         const tileIndexForRender = tileSteppingOn ? tileIndex : 0;
         const totalFrames = baseTotalFrames;
         const effectiveStackLike = mosaicActive ? tileSteppingOn : stackLike;
+
+        const setAuthorityFrame = useCallback((nextIndex: number, _reason: string) => {
+            const clamped = mosaicActive
+                ? 0
+                : Math.max(0, Math.min(totalFrames - 1, Math.floor(nextIndex)));
+            authorityRef.current = {
+                seriesUid: series.seriesInstanceUid,
+                frameIndex: clamped,
+                generation: authorityGenerationRef.current,
+            };
+            setViewState(prev => (prev.frameIndex === clamped ? prev : { ...prev, frameIndex: clamped }));
+        }, [mosaicActive, totalFrames, series.seriesInstanceUid]);
 
         const currentInstance = mosaicActive
             ? instances[0]
@@ -362,9 +438,9 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             ? viewState.frameIndex  // Multiframe: frameIndex is the frame within the file
             : 0;  // Stack: always frame 0 within each instance file
 
-        const canCine = mosaicActive ? (tileSteppingOn && tileCount > 1) : seriesCanCine;
+        const canCine = mosaicActive ? false : seriesCanCine;
         const cineReason = mosaicActive
-            ? (tileSteppingOn ? (tileCount > 1 ? undefined : 'Only one mosaic tile') : 'Mosaic tiles are not acquisition frames')
+            ? 'Mosaic tiles are not acquisition frames'
             : seriesCineReason;
         const mosaicTooltip = mosaicGrid?.assumedGrid
             ? `This is a single image containing multiple tiles. Tiles are not acquisition frames. Grid inferred: ${mosaicGrid.rows}×${mosaicGrid.cols}.`
@@ -437,6 +513,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             index: number
         ) => `${instanceUid}:${rows}x${cols}:${tileCountValue}:tile:${index}`, []);
 
+
         useEffect(() => {
             if (!mosaicActive) {
                 if (tileIndex !== 0) setTileIndex(0);
@@ -451,9 +528,9 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
         useEffect(() => {
             if (mosaicActive && viewState.frameIndex !== 0) {
-                setViewState(prev => ({ ...prev, frameIndex: 0 }));
+                setAuthorityFrame(0, 'mosaic-lock');
             }
-        }, [mosaicActive, viewState.frameIndex]);
+        }, [mosaicActive, viewState.frameIndex, setAuthorityFrame]);
 
         useEffect(() => {
             if (mosaicActive && !mosaicMeasurementAllowed && viewState.activeTool === 'length') {
@@ -489,15 +566,22 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     ? buildSampleIndices(baseTotalFrames, WINDOW_SAMPLE_FRAMES).map(frameNumber => ({
                         instance: instances[0],
                         frameNumber,
+                        frameIndex: frameNumber,
                     }))
                     : buildSampleIndices(instances.length, WINDOW_SAMPLE_FRAMES).map(idx => ({
                         instance: instances[idx],
                         frameNumber: 0,
+                        frameIndex: idx,
                     }));
 
                 for (const target of targets) {
                     try {
-                        const frame = await decodeFrame(target.instance, target.frameNumber);
+                        const { promise } = decodeFrameWithRequest(target.instance, target.frameNumber, {
+                            seriesUid: series.seriesInstanceUid,
+                            generation: authorityGenerationRef.current,
+                            frameIndex: target.frameIndex,
+                        });
+                        const frame = await promise;
                         if (activeSeriesTokenRef.current !== token) return;
                         samples.push(...collectModalitySamples(frame, WINDOW_SAMPLE_PIXELS));
                     } catch {
@@ -621,11 +705,15 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
             const cacheKey = `${currentInstance.fileKey}:${intraFrameIndex}`;
             const cache = frameCacheRef.current;
+            const token = activeSeriesTokenRef.current;
+            const authorityToken = authorityRef.current;
 
             // Cache hit - instant display
             const cachedFrame = cache.get(cacheKey);
             if (cachedFrame) {
                 if (DEBUG_PREFETCH) console.log('[PREFETCH] Cache HIT:', cacheKey);
+                if (!authorityMatches(authorityRef.current, authorityToken)) return;
+                currentFrameAuthorityRef.current = authorityToken;
                 setCurrentFrame(cachedFrame);
                 if (!contactSheet && cachedFrame.contactSheet && baseTotalFrames === 1) {
                     setContactSheet(cachedFrame.contactSheet);
@@ -647,10 +735,6 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             // Cache miss - decode
             if (DEBUG_PREFETCH) console.log('[PREFETCH] Cache MISS:', cacheKey);
 
-            // Increment ID for this new frame load attempt - Latest Wins
-            const requestId = ++activeRequestId.current;
-            const token = activeSeriesTokenRef.current;
-
             // Only show loading if NOT playing cine (avoid flicker)
             // Keep last frame visible during decode
             if (!viewState.isPlaying) {
@@ -659,23 +743,42 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             setError(null);
             setIsUnsupported(false);
 
-            decodeFrame(currentInstance, intraFrameIndex)
-                .then(frame => {
-                    // Ignore if stale request or series changed
-                if (requestId !== activeRequestId.current || token !== activeSeriesTokenRef.current) return;
+            if (mainDecodeRequestIdRef.current) {
+                cancelRequest(mainDecodeRequestIdRef.current);
+                mainDecodeRequestIdRef.current = null;
+            }
 
-                // Store in cache
-                cache.set(cacheKey, frame);
-
-                setCurrentFrame(frame);
-                if (!contactSheet && frame.contactSheet && baseTotalFrames === 1) {
-                    setContactSheet(frame.contactSheet);
+            const { requestId, promise } = decodeFrameWithRequest(
+                currentInstance,
+                intraFrameIndex,
+                {
+                    seriesUid: authorityToken.seriesUid,
+                    generation: authorityToken.generation,
+                    frameIndex: authorityToken.frameIndex,
                 }
-                // Set initial window from frame defaults
-                if (viewState.frameIndex === 0 || !currentFrame) {
-                    const defaults = resolveWindowDefaults(frame);
-                    setViewState(prev => ({
-                        ...prev,
+            );
+            mainDecodeRequestIdRef.current = requestId;
+
+            promise
+                .then(frame => {
+                    if (!shouldAcceptDecode(authorityRef.current, authorityToken, requestId, mainDecodeRequestIdRef.current)) {
+                        return;
+                    }
+                    if (token !== activeSeriesTokenRef.current) return;
+
+                    // Store in cache
+                    cache.set(cacheKey, frame);
+
+                    currentFrameAuthorityRef.current = authorityToken;
+                    setCurrentFrame(frame);
+                    if (!contactSheet && frame.contactSheet && baseTotalFrames === 1) {
+                        setContactSheet(frame.contactSheet);
+                    }
+                    // Set initial window from frame defaults
+                    if (viewState.frameIndex === 0 || !currentFrame) {
+                        const defaults = resolveWindowDefaults(frame);
+                        setViewState(prev => ({
+                            ...prev,
                             windowCenter: defaults.center,
                             windowWidth: defaults.width,
                         }));
@@ -684,8 +787,10 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     setLoading(false);
                 })
                 .catch(err => {
-                    // Ignore if stale request or series changed
-                    if (requestId !== activeRequestId.current || token !== activeSeriesTokenRef.current) return;
+                    if (!shouldAcceptDecode(authorityRef.current, authorityToken, requestId, mainDecodeRequestIdRef.current)) {
+                        return;
+                    }
+                    if (token !== activeSeriesTokenRef.current) return;
 
                     if (err instanceof DecodeError) {
                         setError(err.message);
@@ -694,6 +799,11 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                         setError(err.message || 'Decode failed');
                     }
                     setLoading(false);
+                })
+                .finally(() => {
+                    if (mainDecodeRequestIdRef.current === requestId) {
+                        mainDecodeRequestIdRef.current = null;
+                    }
                 });
         }, [currentInstance, intraFrameIndex, baseTotalFrames, contactSheet]);
 
@@ -714,7 +824,8 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
             // Pump while we have capacity and items in queue
             while (prefetchInflightRef.current < PREFETCH_MAX_INFLIGHT && queue.length > 0) {
-                const instance = queue.shift()!;
+                const nextItem = queue.shift()!;
+                const instance = nextItem.instance;
                 const cacheKey = `${instance.fileKey}:0`;
 
                 // Skip if already cached or unsupported
@@ -725,7 +836,11 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 prefetchInflightRef.current++;
                 if (DEBUG_PREFETCH) console.log('[PREFETCH] Fetching:', cacheKey, 'inflight:', prefetchInflightRef.current);
 
-                decodeFrame(instance, 0)
+                decodeFrameWithRequest(instance, 0, {
+                    seriesUid: instance.seriesInstanceUid,
+                    generation: authorityGenerationRef.current,
+                    frameIndex: nextItem.frameIndex,
+                }).promise
                     .then(frame => {
                         // Check generation and series token
                         if (prefetchGenerationRef.current !== generation) {
@@ -762,6 +877,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             const cache = tileCacheRef.current;
             const generation = tilePrefetchGenerationRef.current;
             const token = activeSeriesTokenRef.current;
+            const authorityToken = authorityRef.current;
 
             while (tilePrefetchInflightRef.current < MOSAIC_PREFETCH_MAX_INFLIGHT && queue.length > 0) {
                 const nextIndex = queue.shift()!;
@@ -783,7 +899,12 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     mosaicGrid.rows,
                     mosaicGrid.cols,
                     mosaicGrid.tileCount,
-                    intraFrameIndex
+                    intraFrameIndex,
+                    {
+                        seriesUid: authorityRef.current.seriesUid,
+                        generation: authorityRef.current.generation,
+                        frameIndex: authorityRef.current.frameIndex,
+                    }
                 );
                 tilePrefetchRequestIdRef.current = requestId;
 
@@ -791,6 +912,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     .then(frame => {
                         if (tilePrefetchGenerationRef.current !== generation) return;
                         if (activeSeriesTokenRef.current !== token) return;
+                        if (!authorityMatches(authorityRef.current, authorityToken)) return;
 
                         cache.set(cacheKey, frame);
                     })
@@ -847,13 +969,19 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             }
 
             const token = activeSeriesTokenRef.current;
+            const authorityToken = authorityRef.current;
             const { requestId, promise } = decodeMosaicTile(
                 currentInstance,
                 safeIndex,
                 mosaicGrid.rows,
                 mosaicGrid.cols,
                 mosaicGrid.tileCount,
-                intraFrameIndex
+                intraFrameIndex,
+                {
+                    seriesUid: authorityToken.seriesUid,
+                    generation: authorityToken.generation,
+                    frameIndex: authorityToken.frameIndex,
+                }
             );
 
             tileDecodeRequestIdRef.current = requestId;
@@ -863,6 +991,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 .then(frame => {
                     if (activeSeriesTokenRef.current !== token) return;
                     if (tileDecodeRequestIdRef.current !== requestId) return;
+                    if (!authorityMatches(authorityRef.current, authorityToken)) return;
 
                     tileCacheRef.current.set(cacheKey, frame);
                     setCurrentTileFrame({ frame, tileIndex: safeIndex });
@@ -870,6 +999,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 .catch(err => {
                     if (activeSeriesTokenRef.current !== token) return;
                     if (tileDecodeRequestIdRef.current !== requestId) return;
+                    if (!authorityMatches(authorityRef.current, authorityToken)) return;
 
                     if (import.meta.env.DEV) {
                         console.warn('[Viewport] mosaic tile decode failed; falling back to full-frame crop', {
@@ -893,7 +1023,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         useEffect(() => {
             const startIdx = viewState.frameIndex;
             const dir = lastNavDirRef.current;
-            const queue: Instance[] = [];
+            const queue: { instance: Instance; frameIndex: number }[] = [];
             const queuedSet = prefetchQueuedSetRef.current;
             queuedSet.clear();
 
@@ -911,7 +1041,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 }
                 const inst = instances[idx];
                 if (inst && !queuedSet.has(inst.fileKey)) {
-                    queue.push(inst);
+                    queue.push({ instance: inst, frameIndex: idx });
                     queuedSet.add(inst.fileKey);
                 }
             }
@@ -926,7 +1056,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 }
                 const inst = instances[idx];
                 if (inst && !queuedSet.has(inst.fileKey)) {
-                    queue.push(inst);
+                    queue.push({ instance: inst, frameIndex: idx });
                     queuedSet.add(inst.fileKey);
                 }
             }
@@ -1016,21 +1146,47 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 return;
             }
 
-            // Resolve authoritative frame
+            // Resolve authoritative frame (displayed vs requested)
+            const authorityToken = authorityRef.current;
+            const currentFrameForAuthority = currentFrame
+                && currentFrameAuthorityRef.current
+                && authorityMatches(authorityRef.current, currentFrameAuthorityRef.current)
+                ? currentFrame
+                : null;
+            const lastGoodForAuthority = lastGoodFrameRef.current
+                && authoritySameSeries(authorityRef.current, lastGoodFrameRef.current.authority)
+                ? lastGoodFrameRef.current
+                : null;
+
             const authority = resolveFrameAuthority(
-                viewState.frameIndex,
-                currentFrame,
-                lastGoodFrameRef.current,
+                authorityToken.frameIndex,
+                currentFrameForAuthority,
+                lastGoodForAuthority,
                 viewState.isPlaying
             );
 
             if (authority.reason === 'current' && authority.frame) {
-                lastGoodFrameRef.current = authority.frame;
+                lastGoodFrameRef.current = {
+                    frame: authority.frame,
+                    index: authority.displayedIndex,
+                    authority: authorityToken,
+                };
+            }
+
+            if (authority.ready) {
+                lastRenderedRef.current = {
+                    seriesUid: authorityToken.seriesUid,
+                    frameIndex: authority.displayedIndex,
+                    generation: authorityToken.generation,
+                };
             }
 
             const isFallback = authority.isFallback;
             if (isBuffering !== isFallback) {
                 setIsBuffering(isFallback);
+            }
+            if (displayedFrameIndex !== authority.displayedIndex) {
+                setDisplayedFrameIndex(authority.displayedIndex);
             }
 
             const frameToRender = authority.frame;
@@ -1061,8 +1217,9 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     kind: series.kind,
                     stackLike: effectiveStackLike,
                     totalFrames,
-                    currentFrame: viewState.frameIndex,
-                    authorityIndex: authority.index,
+                    requestedFrame: authority.requestedIndex,
+                    displayedFrame: authority.displayedIndex,
+                    authorityGeneration: authorityToken.generation,
                     instanceUid: currentInstance?.sopInstanceUid,
                     frameNumber: intraFrameIndex,
                     decodedSize: { width: frameToRender.width, height: frameToRender.height },
@@ -1111,7 +1268,8 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             }
 
             drawOverlay(canvas, {
-                frameIndex: viewState.frameIndex,
+                frameIndex: authority.displayedIndex,
+                requestedFrameIndex: authority.requestedIndex,
                 totalFrames: totalFrames,
                 windowCenter: viewState.windowCenter,
                 windowWidth: viewState.windowWidth,
@@ -1133,7 +1291,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 activePresetName: viewState.activePreset ? getPresetById(viewState.activePreset)?.label : undefined,
                 tileInfo: renderSource.tileInfo,
             });
-        }, [currentFrame, currentTileFrame, viewState, loading, error, isUnsupported, totalFrames, tileIndexForRender, tileCount, mosaicActive, currentInstance, series.geometryTrustInfo, canCine, cineReason, windowingSource, resolveRenderSource, effectiveStackLike, series.seriesInstanceUid, series.kind, intraFrameIndex]);
+        }, [currentFrame, currentTileFrame, viewState, loading, error, isUnsupported, totalFrames, tileIndexForRender, tileCount, mosaicActive, currentInstance, series.geometryTrustInfo, canCine, cineReason, windowingSource, resolveRenderSource, effectiveStackLike, series.seriesInstanceUid, series.kind, intraFrameIndex, displayedFrameIndex]);
 
         // Resize handler
         useEffect(() => {
@@ -1207,14 +1365,14 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             // totalFrames is already computed above and used for cine target calculation
 
             // Kickstart prefetch for smoother cine start
-            const queue: Instance[] = [];
+            const queue: { instance: Instance; frameIndex: number }[] = [];
             const queuedSet = prefetchQueuedSetRef.current;
             queuedSet.clear();
             for (let i = 1; i <= PREFETCH_CINE_AHEAD; i++) {
                 const idx = (viewState.frameIndex + i) % totalFrames;
                 const inst = instances[idx];
                 if (inst && !queuedSet.has(inst.fileKey)) {
-                    queue.push(inst);
+                    queue.push({ instance: inst, frameIndex: idx });
                     queuedSet.add(inst.fileKey);
                 }
             }
@@ -1235,18 +1393,14 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     return;
                 }
 
-                setViewState(p => {
-                    // CRITICAL: Hard guard - do NOT advance if not playing
-                    if (!p.isPlaying) return p;
+                const elapsed = performance.now() - cineStartTimeRef.current;
+                const framesSinceStart = Math.floor(elapsed / frameDurationMs);
+                const targetIndex = (cineStartIndexRef.current + framesSinceStart) % totalFrames;
 
-                    const elapsed = performance.now() - cineStartTimeRef.current;
-                    const framesSinceStart = Math.floor(elapsed / frameDurationMs);
-                    const targetIndex = (cineStartIndexRef.current + framesSinceStart) % totalFrames;
-
-                    // Only update if target is different (skip duplicates)
-                    if (p.frameIndex === targetIndex) return p;
-                    return { ...p, frameIndex: targetIndex };
-                });
+                // Only update if target is different (skip duplicates)
+                if (authorityRef.current.frameIndex !== targetIndex) {
+                    setAuthorityFrame(targetIndex, 'cine');
+                }
             }, frameDurationMs / 2); // Check at 2x rate for responsiveness
 
             // Cleanup on effect teardown (when isPlaying becomes false or component unmounts)
@@ -1256,7 +1410,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     cineIntervalRef.current = null;
                 }
             };
-        }, [viewState.isPlaying, viewState.cineFrameRate, instances, runPrefetchPump, canCine, mosaicActive, tileSteppingOn, tileCount, totalFrames]);
+        }, [viewState.isPlaying, viewState.cineFrameRate, instances, runPrefetchPump, canCine, mosaicActive, tileSteppingOn, tileCount, totalFrames, setAuthorityFrame]);
 
         // Mouse handlers
         // Native wheel handler for non-passive prevention (stack scroll)
@@ -1324,10 +1478,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                             // Track navigation direction
                             lastNavDirRef.current = steps > 0 ? 1 : -1;
 
-                            setViewState(prev => ({
-                                ...prev,
-                                frameIndex: Math.max(0, Math.min(totalFrames - 1, prev.frameIndex + steps))
-                            }));
+                            setAuthorityFrame(viewState.frameIndex + steps, 'wheel');
                         }
                     }
                 }
@@ -1337,7 +1488,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             // Reset accumulator when series changes to prevent jump
             wheelAccumulator.current = 0;
             return () => container.removeEventListener('wheel', onWheel);
-        }, [series.seriesInstanceUid, effectiveStackLike, mosaicActive, tileSteppingOn, tileCount, totalFrames, stackReverse]);
+        }, [series.seriesInstanceUid, effectiveStackLike, mosaicActive, tileSteppingOn, tileCount, totalFrames, stackReverse, viewState.frameIndex, setAuthorityFrame]);
 
         // Imperative action handler for external routing (from MultiViewport)
         const applyAction = useCallback((action: ShortcutAction) => {
@@ -1352,54 +1503,42 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                         setTileIndex(prev => Math.max(0, prev - 1));
                         break;
                     }
-                    setViewState(prev => ({
-                        ...prev,
-                        frameIndex: calculateNextFrame(prev.frameIndex, totalFrames, -1, stackReverse)
-                    }));
+                    setAuthorityFrame(calculateNextFrame(viewState.frameIndex, totalFrames, -1, stackReverse), 'shortcut-prev');
                     break;
                 case 'NEXT_FRAME':
                     if (mosaicActive && tileSteppingOn) {
                         setTileIndex(prev => Math.min(tileCount - 1, prev + 1));
                         break;
                     }
-                    setViewState(prev => ({
-                        ...prev,
-                        frameIndex: calculateNextFrame(prev.frameIndex, totalFrames, 1, stackReverse)
-                    }));
+                    setAuthorityFrame(calculateNextFrame(viewState.frameIndex, totalFrames, 1, stackReverse), 'shortcut-next');
                     break;
                 case 'JUMP_BACK_10':
                     if (mosaicActive && tileSteppingOn) {
                         setTileIndex(prev => Math.max(0, prev - 10));
                         break;
                     }
-                    setViewState(prev => ({
-                        ...prev,
-                        frameIndex: calculateNextFrame(prev.frameIndex, totalFrames, -10, stackReverse)
-                    }));
+                    setAuthorityFrame(calculateNextFrame(viewState.frameIndex, totalFrames, -10, stackReverse), 'shortcut-back-10');
                     break;
                 case 'JUMP_FWD_10':
                     if (mosaicActive && tileSteppingOn) {
                         setTileIndex(prev => Math.min(tileCount - 1, prev + 10));
                         break;
                     }
-                    setViewState(prev => ({
-                        ...prev,
-                        frameIndex: calculateNextFrame(prev.frameIndex, totalFrames, 10, stackReverse)
-                    }));
+                    setAuthorityFrame(calculateNextFrame(viewState.frameIndex, totalFrames, 10, stackReverse), 'shortcut-fwd-10');
                     break;
                 case 'FIRST_FRAME':
                     if (mosaicActive && tileSteppingOn) {
                         setTileIndex(0);
                         break;
                     }
-                    setViewState(prev => ({ ...prev, frameIndex: 0 }));
+                    setAuthorityFrame(0, 'shortcut-first');
                     break;
                 case 'LAST_FRAME':
                     if (mosaicActive && tileSteppingOn) {
                         setTileIndex(Math.max(0, tileCount - 1));
                         break;
                     }
-                    setViewState(prev => ({ ...prev, frameIndex: totalFrames - 1 }));
+                    setAuthorityFrame(totalFrames - 1, 'shortcut-last');
                     break;
                 case 'RESET':
                     windowingLockedRef.current = true;
@@ -1482,7 +1621,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                     dispatch({ type: 'SET_SHORTCUTS_VISIBLE', visible: true });
                     break;
             }
-        }, [totalFrames, stackReverse, toggleCine, dispatch, currentFrame, mosaicActive, tileSteppingOn, tileCount, mosaicMeasurementAllowed, mosaicMeasurementWarning]);
+        }, [totalFrames, stackReverse, toggleCine, dispatch, currentFrame, mosaicActive, tileSteppingOn, tileCount, mosaicMeasurementAllowed, mosaicMeasurementWarning, setAuthorityFrame, viewState.frameIndex]);
 
         // Expose imperative handle for external action routing
         useImperativeHandle(ref, () => ({
@@ -1494,10 +1633,21 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
             const canvas = canvasRef.current;
             const container = containerRef.current;
             // Use resolveFrameAuthority to ensure we interact with the visible frame
+            const authorityToken = authorityRef.current;
+            const currentFrameForAuthority = currentFrame
+                && currentFrameAuthorityRef.current
+                && authorityMatches(authorityRef.current, currentFrameAuthorityRef.current)
+                ? currentFrame
+                : null;
+            const lastGoodForAuthority = lastGoodFrameRef.current
+                && authoritySameSeries(authorityRef.current, lastGoodFrameRef.current.authority)
+                ? lastGoodFrameRef.current
+                : null;
+
             const authority = resolveFrameAuthority(
-                viewState.frameIndex,
-                currentFrame,
-                lastGoodFrameRef.current,
+                authorityToken.frameIndex,
+                currentFrameForAuthority,
+                lastGoodForAuthority,
                 viewState.isPlaying
             );
             const frameForTools = authority.frame;
@@ -1594,7 +1744,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 }
                 const scrubTotal = mosaicActive ? tileCount : totalFrames;
                 if (scrubTotal <= 1) return;
-                const scrubStart = mosaicActive ? tileIndex : viewState.frameIndex;
+                const scrubStart = mosaicActive ? tileIndex : displayedFrameIndex;
                 // Start scrub mode
                 scrubRef.current = {
                     startFrame: scrubStart,
@@ -1613,7 +1763,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 // Left or Middle: Pan
                 dragRef.current = { startX: e.clientX, startY: e.clientY, mode: 'pan' };
             }
-        }, [viewState.activeTool, viewState.isPlaying, viewState.frameIndex, preferences.pauseCineOnMeasure, canvasToImageCoords, toggleCine, mosaicActive, tileSteppingOn, tileCount, totalFrames, tileIndex, mosaicMeasurementAllowed, mosaicMeasurementWarning, dispatch]);
+        }, [viewState.activeTool, viewState.isPlaying, preferences.pauseCineOnMeasure, canvasToImageCoords, toggleCine, mosaicActive, tileSteppingOn, tileCount, totalFrames, tileIndex, displayedFrameIndex, mosaicMeasurementAllowed, mosaicMeasurementWarning, dispatch]);
 
         const handleMouseMove = useCallback((e: React.MouseEvent) => {
             if (!dragRef.current.mode) return;
@@ -1666,10 +1816,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 if (mosaicActive) {
                     setTileIndex(newIndex);
                 } else {
-                    setViewState(prev => ({
-                        ...prev,
-                        frameIndex: newIndex,
-                    }));
+                    setAuthorityFrame(newIndex, 'scrub');
                 }
                 // Don't update startY for scrub - we use absolute position
                 return;
@@ -1677,7 +1824,7 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
 
             dragRef.current.startX = e.clientX;
             dragRef.current.startY = e.clientY;
-        }, [canvasToImageCoords, mosaicActive, tileCount, totalFrames]);
+        }, [canvasToImageCoords, mosaicActive, tileCount, totalFrames, setAuthorityFrame]);
 
         const handleMouseUp = useCallback(() => {
             // Commit measurement if we were drawing one
@@ -1887,7 +2034,12 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
                 </div>
 
                 <div className="dicom-viewer__status">
-                    <span>Frame: {viewState.frameIndex + 1}/{totalFrames}</span>
+                    <span>
+                        Frame: {displayedFrameIndex + 1}/{totalFrames}
+                        {isBuffering && displayedFrameIndex !== viewState.frameIndex
+                            ? ` (req ${viewState.frameIndex + 1})`
+                            : ''}
+                    </span>
                     {mosaicActive && (
                         <span title={mosaicTooltip}>MOSAIC / CONTACT SHEET tile {tileIndexForRender + 1}/{tileCount}</span>
                     )}

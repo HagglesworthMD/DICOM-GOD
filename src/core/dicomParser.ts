@@ -33,7 +33,10 @@ const TAGS = {
     // Instance
     InstanceNumber: 0x00200013,
     SOPInstanceUID: 0x00080018,
+    SOPClassUID: 0x00080016,
     NumberOfFrames: 0x00280008,
+    ImageType: 0x00080008,
+    DerivationDescription: 0x00082111,
 
     // Image Geometry
     ImageOrientationPatient: 0x00200037,
@@ -48,6 +51,7 @@ const TAGS = {
     HighBit: 0x00280102,
     PixelRepresentation: 0x00280103,
     PhotometricInterpretation: 0x00280004,
+    UltrasoundRegionSequence: 0x00186011,
 
     // Windowing
     WindowCenter: 0x00281050,
@@ -61,6 +65,12 @@ const TAGS = {
 
 // VRs that use 4-byte length field (explicit VR)
 const VR_32BIT = new Set(['OB', 'OD', 'OF', 'OL', 'OW', 'SQ', 'UC', 'UN', 'UR', 'UT']);
+
+const MOSAIC_TAGS: Record<number, string> = {
+    0x0019100A: 'Private0019,100A_NumberOfImagesInMosaic',
+    0x0051100A: 'Private0051,100A_Mosaic',
+    0x0051100B: 'Private0051,100B_Mosaic',
+};
 
 export interface ParsedDicom {
     isValid: boolean;
@@ -89,6 +99,9 @@ export interface ParsedDicom {
     // Instance
     instanceNumber?: number;
     sopInstanceUid?: string;
+    sopClassUid?: string;
+    imageType?: string;
+    derivationDescription?: string;
 
     // Geometry
     imageOrientationPatient?: string;
@@ -104,6 +117,8 @@ export interface ParsedDicom {
     photometricInterpretation?: string;
     samplesPerPixel?: number;
     numberOfFrames?: number;
+    ultrasoundRegionSequence?: boolean;
+    mosaicEvidenceTags?: string[];
 
     // Windowing
     windowCenter?: number;
@@ -166,6 +181,17 @@ export async function parseDicomHeader(file: File): Promise<ParsedDicom> {
             const element = view.getUint16(offset + 2, isLittleEndian);
             const tag = (group << 16) | element;
             offset += 4;
+
+            if (tag === TAGS.UltrasoundRegionSequence) {
+                result.ultrasoundRegionSequence = true;
+            }
+            const mosaicTag = MOSAIC_TAGS[tag];
+            if (mosaicTag) {
+                if (!result.mosaicEvidenceTags) result.mosaicEvidenceTags = [];
+                if (!result.mosaicEvidenceTags.includes(mosaicTag)) {
+                    result.mosaicEvidenceTags.push(mosaicTag);
+                }
+            }
 
             // Stop at PixelData
             if (tag === TAGS.PixelData) {
@@ -283,6 +309,15 @@ export async function parseDicomHeader(file: File): Promise<ParsedDicom> {
                     break;
                 case TAGS.SOPInstanceUID:
                     result.sopInstanceUid = value as string;
+                    break;
+                case TAGS.SOPClassUID:
+                    result.sopClassUid = value as string;
+                    break;
+                case TAGS.ImageType:
+                    result.imageType = value as string;
+                    break;
+                case TAGS.DerivationDescription:
+                    result.derivationDescription = value as string;
                     break;
                 case TAGS.NumberOfFrames:
                     result.numberOfFrames = parseIntValue(value);
