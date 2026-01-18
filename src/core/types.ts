@@ -102,6 +102,10 @@ export interface Series {
     cineEligible: boolean;
     /** Reason cine is disabled (if !cineEligible) */
     cineReason?: string;
+    /** True if series is document-like (badge only) */
+    documentLike?: boolean;
+    /** Reason series is document-like */
+    documentReason?: string;
     /** True when series should be treated as stack for viewing */
     stackLike?: boolean;
     /** True if any instance has NumberOfFrames > 1 */
@@ -124,6 +128,10 @@ export interface Instance {
     fileSize: number;
     /** SOP Class UID (optional, for semantic classification) */
     sopClassUid?: string;
+    /** ImageType (for doc/mosaic hints) */
+    imageType?: string;
+    /** DerivationDescription (for doc/mosaic hints) */
+    derivationDescription?: string;
 
     // Geometry
     imageOrientationPatient?: string;
@@ -150,6 +158,10 @@ export interface Instance {
     // Multi-frame
     samplesPerPixel?: number;
     numberOfFrames?: number;
+
+    // Explicit mosaic indicators
+    ultrasoundRegionSequence?: boolean;
+    mosaicEvidenceTags?: string[];
 }
 
 // ============================================================================
@@ -274,6 +286,10 @@ export interface DecodeRequest {
     file: File;
     instanceUid: string;
     frameNumber: number;
+    /** Dataset frame index for authority fencing (stack/multiframe) */
+    frameIndex: number;
+    seriesUid: string;
+    generation: number;
 }
 
 /** Request to decode a mosaic tile (UI-only, not a dataset frame) */
@@ -287,6 +303,9 @@ export interface DecodeMosaicTileRequest {
     rows: number;
     cols: number;
     tileCount: number;
+    frameIndex: number;
+    seriesUid: string;
+    generation: number;
 }
 
 /** Cancel decode request */
@@ -303,6 +322,9 @@ export interface DecodeSuccess {
     instanceUid: string;
     frameNumber: number;
     frame: DecodedFrame;
+    frameIndex: number;
+    seriesUid: string;
+    generation: number;
 }
 
 export interface DecodeMosaicTileSuccess {
@@ -312,6 +334,9 @@ export interface DecodeMosaicTileSuccess {
     frameNumber: number;
     tileIndex: number;
     frame: DecodedFrame;
+    frameIndex: number;
+    seriesUid: string;
+    generation: number;
 }
 
 export interface DecodeError {
@@ -320,6 +345,9 @@ export interface DecodeError {
     instanceUid: string;
     error: string;
     isUnsupported?: boolean;
+    frameIndex?: number;
+    seriesUid?: string;
+    generation?: number;
 }
 
 export interface DecodeCancelled {

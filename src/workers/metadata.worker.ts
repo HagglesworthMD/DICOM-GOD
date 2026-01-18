@@ -14,6 +14,7 @@ import type {
     Instance,
     IndexProgress
 } from '../core/types';
+import { classifySeriesSemantics } from '../core/seriesSemantics';
 
 // Currently active job - cancel flag
 let currentRequestId: string | null = null;
@@ -281,6 +282,9 @@ function addInstance(series: Series, parsed: ParsedDicom, file: FileEntry) {
 
         filePath: file.path ?? file.name,
         fileSize: file.size,
+        sopClassUid: parsed.sopClassUid,
+        imageType: parsed.imageType,
+        derivationDescription: parsed.derivationDescription,
         imageOrientationPatient: parsed.imageOrientationPatient,
         imagePositionPatient: parsed.imagePositionPatient,
         pixelSpacing: parsed.pixelSpacing,
@@ -295,6 +299,8 @@ function addInstance(series: Series, parsed: ParsedDicom, file: FileEntry) {
         photometricInterpretation: parsed.photometricInterpretation,
         samplesPerPixel: parsed.samplesPerPixel,
         numberOfFrames: parsed.numberOfFrames,
+        ultrasoundRegionSequence: parsed.ultrasoundRegionSequence,
+        mosaicEvidenceTags: parsed.mosaicEvidenceTags,
         windowCenter: parsed.windowCenter,
         windowWidth: parsed.windowWidth,
         rescaleSlope: parsed.rescaleSlope,
@@ -502,12 +508,14 @@ function sortStudyContents(study: Study) {
     for (const series of study.series) {
         const instanceCount = series.instances.length;
 
-        // Check for multiframe
-        const hasMultiframe = series.instances.some(i => (i.numberOfFrames ?? 1) > 1);
-        series.hasMultiframe = hasMultiframe;
+        const semantics = classifySeriesSemantics(series.instances, series.modality);
+        series.hasMultiframe = semantics.hasMultiframe;
+        series.stackLike = semantics.stackLike;
+        series.documentLike = semantics.documentLike;
+        series.documentReason = semantics.documentReason;
 
         // Determine kind and cine eligibility
-        if (hasMultiframe) {
+        if (series.hasMultiframe) {
             series.kind = 'multiframe';
             series.cineEligible = true;
             series.cineReason = undefined;

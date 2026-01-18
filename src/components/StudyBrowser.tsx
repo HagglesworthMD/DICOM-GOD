@@ -103,6 +103,7 @@ function getKindBadge(kind: Series['kind']): { text: string; color: string } {
             // I will update the function signature in the next step or do it inline.
             return { text: 'STACK', color: '#4a9' };
         case 'multiframe': return { text: 'CINE', color: '#49f' };
+        case 'document': return { text: 'DOC', color: '#c86' };
         case 'unsafe': return { text: 'UNSAFE', color: '#f44' };
         case 'single':
         default: return { text: 'SINGLE', color: '#666' };
@@ -126,6 +127,9 @@ function SeriesItem({ series, isSelected, onSelect }: SeriesItemProps) {
     }
     if (series.hasMultiframe) {
         kindTooltip += '\nMulti-frame DICOM';
+    }
+    if (series.documentLike) {
+        kindTooltip += `\nDOC: ${series.documentReason ?? 'Document-like'}`;
     }
 
     // De-emphasize single-image series
@@ -165,6 +169,24 @@ function SeriesItem({ series, isSelected, onSelect }: SeriesItemProps) {
                 >
                     {kindBadge.text}
                 </span>
+                {series.documentLike && (
+                    <span
+                        className="series-item__kind"
+                        title={series.documentReason ?? 'Document-like series'}
+                        style={{
+                            fontSize: '0.65em',
+                            fontWeight: 'bold',
+                            color: '#c86',
+                            background: 'rgba(0,0,0,0.3)',
+                            padding: '2px 4px',
+                            borderRadius: '3px',
+                            marginLeft: '4px',
+                            cursor: 'help'
+                        }}
+                    >
+                        DOC
+                    </span>
+                )}
                 <span
                     className="series-item__trust"
                     title={trustTooltip}
